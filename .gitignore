@@ -1,0 +1,45 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+
+# === 虚拟环境 ===
+venv/
+.venv/
+env/
+
+# === 环境变量与密钥(绝不提交!) ===
+.env
+.env.*
+*.pem
+*.key
+
+# === 数据库(本地数据) ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === 测试与缓存 ===
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+
+# === 系统 ===
+.DS_Store
+Thumbs.db
+
+# === Android(客户端将来会用) ===
+*.apk
+*.aab
+local.properties
