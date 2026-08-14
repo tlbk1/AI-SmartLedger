@@ -43,3 +43,4 @@ Thumbs.db
 *.apk
 *.aab
 local.properties
+*.db
