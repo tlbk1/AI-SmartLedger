@@ -21,9 +21,14 @@ from datetime import datetime
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
 from tools import TOOL_SCHEMA, QueryParams
+
+# 与 wechat.py 同理：模块级就要读到 .env 里的 LLM_API_KEY / LLM_MODEL，
+# 否则被其他模块先 import 时 os.environ 为空，直接 KeyError。
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -142,11 +147,26 @@ def classify_intent(content: str, now_str: str) -> Literal["record", "query", "c
                 {"role": "user", "content": content},
             ],
             tools=tools,
-            tool_choice={"type": "function", "function": {"name": "set_intent"}},
+            # 注意：deepseek-v4-flash/pro 是 thinking mode，
+            # 不支持强制 tool_choice，只能给 tools 数组让模型自己决定。
             temperature=0,
         )
-        args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
-        return args.get("intent", "chat")
+        msg = resp.choices[0].message
+        if msg.tool_calls:
+            args = json.loads(msg.tool_calls[0].function.arguments)
+            return args.get("intent", "chat")
+        # 模型没走 tool calling，尝试从文本解析 JSON
+        text = msg.content or ""
+        if text.strip():
+            try:
+                # 提取第一个 JSON 对象
+                start, end = text.find("{"), text.rfind("}")
+                if start >= 0 and end > start:
+                    args = json.loads(text[start:end + 1])
+                    return args.get("intent", "chat")
+            except json.JSONDecodeError:
+                pass
+        return "chat"
     except Exception as e:
         logger.warning("意图分类失败，降级为 chat: %s", e)
         return "chat"
@@ -261,10 +281,17 @@ def extract_query_params(content: str, now_str: str) -> Optional[QueryParams]:
                 {"role": "user", "content": content},
             ],
             tools=[TOOL_SCHEMA],
-            tool_choice={"type": "function", "function": {"name": "query_transactions"}},
+            # 同 classify：thinking mode 不支持 tool_choice 强制
             temperature=0,
         )
-        args = json.loads(resp.choices[0].message.tool_calls[0].function.arguments)
+        msg = resp.choices[0].message
+        if msg.tool_calls:
+            args = json.loads(msg.tool_calls[0].function.arguments)
+        else:
+            # 兜底：从文本解析 JSON
+            text = msg.content or ""
+            start, end = text.find("{"), text.rfind("}")
+            args = json.loads(text[start:end + 1]) if start >= 0 and end > start else {}
         return QueryParams(
             date_from=args["date_from"],
             date_to=args["date_to"],

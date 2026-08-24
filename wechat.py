@@ -12,6 +12,7 @@ wechat.py — 微信公众号协议适配层
 
 import hashlib
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -23,7 +24,13 @@ logger = logging.getLogger(__name__)
 
 # ──────────────────────────── 配置 ────────────────────────────
 
-import os
+# 必须在读取环境变量前加载 .env——
+# 否则当别的模块先 import 本文件时（main.py 的 load_dotenv 还没执行），
+# os.environ 里没有 WECHAT_TOKEN，会落到默认值 beecount2026，
+# 导致签名永远对不上（用户已踩坑：Token 改为 wwwledger 后仍 403）。
+from dotenv import load_dotenv
+
+load_dotenv()
 
 WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "beecount2026")
 WECHAT_APP_ID = os.environ.get("WECHAT_APP_ID", "")
