@@ -472,3 +472,82 @@ def migrate_old_data(openid: str, ledger_name: str = "我的账本") -> Optional
         )
         conn.commit()
         return ledger_id
+
+
+# ════════════════════════ 账本内分权（owner = 管理 / member = 普通） ════════════════════════
+
+def is_ledger_admin(openid: str) -> bool:
+    """判断当前 openid 是否是其「最近账本」的 owner（管理员）。"""
+    ledger_id = get_user_ledger_id(openid)
+    if ledger_id is None:
+        return False
+    with _connect() as conn:
+        row = conn.execute("""
+            SELECT lm.role
+            FROM ledger_members lm
+            JOIN users u ON u.id = lm.user_id
+            WHERE u.openid = ? AND lm.ledger_id = ?
+        """, (openid, ledger_id)).fetchone()
+        return bool(row and row["role"] == "owner")
+
+
+def _get_user_id_by_openid(conn, openid: str) -> Optional[int]:
+    row = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
+    return row["id"] if row else None
+
+
+def admin_remove_member(openid: str, target_openid: str) -> tuple[bool, str]:
+    """owner 移除账本里的某个成员。返回 (成功?, 消息)。"""
+    ledger_id = get_user_ledger_id(openid)
+    if ledger_id is None:
+        return False, "你没有加入任何账本"
+    if not is_ledger_admin(openid):
+        return False, "只有管理员才能移除成员"
+    with _connect() as conn:
+        target_uid = _get_user_id_by_openid(conn, target_openid)
+        if target_uid is None:
+            return False, "目标用户不存在"
+        # 不能移除 owner 自己
+        owner_uid = conn.execute(
+            "SELECT lm.user_id FROM ledger_members lm WHERE lm.ledger_id=? AND lm.role='owner'",
+            (ledger_id,),
+        ).fetchone()
+        if owner_uid and owner_uid["user_id"] == target_uid:
+            return False, "不能移除管理员自己"
+        cur = conn.execute(
+            "DELETE FROM ledger_members WHERE ledger_id=? AND user_id=?",
+            (ledger_id, target_uid),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return False, "该用户不在这个账本里"
+        return True, "已移除该成员"
+
+
+def admin_rename_ledger(openid: str, new_name: str) -> tuple[bool, str]:
+    """owner 修改账本名。返回 (成功?, 消息)。"""
+    ledger_id = get_user_ledger_id(openid)
+    if ledger_id is None:
+        return False, "你没有加入任何账本"
+    if not is_ledger_admin(openid):
+        return False, "只有管理员才能修改账本名"
+    with _connect() as conn:
+        conn.execute("UPDATE ledgers SET name=? WHERE id=?", (new_name, ledger_id))
+        conn.commit()
+        return True, f"账本已改名为「{new_name}」"
+
+
+def admin_delete_ledger(openid: str) -> tuple[bool, str]:
+    """owner 删除账本（连同成员关系；不删账目数据，只移除归属）。返回 (成功?, 消息)。"""
+    ledger_id = get_user_ledger_id(openid)
+    if ledger_id is None:
+        return False, "你没有加入任何账本"
+    if not is_ledger_admin(openid):
+        return False, "只有管理员才能删除账本"
+    with _connect() as conn:
+        # 移除成员关系 + 账本本身；账目保留但 ledger_id 置空（避免数据丢失）
+        conn.execute("DELETE FROM ledger_members WHERE ledger_id=?", (ledger_id,))
+        conn.execute("DELETE FROM ledgers WHERE id=?", (ledger_id,))
+        conn.execute("UPDATE transactions SET ledger_id=NULL, created_by_user_id=NULL WHERE ledger_id=?", (ledger_id,))
+        conn.commit()
+        return True, "账本已删除"

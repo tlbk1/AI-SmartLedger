@@ -139,13 +139,38 @@ def get_my_ledgers(openid: str) -> str:
     return "你加入的账本：\n" + "\n".join(lines)
 
 
+# ── 管理操作（仅账本 owner / 管理员可用）──
+
+@tool
+def admin_remove_member(openid: str, target_openid: str) -> str:
+    """[仅管理员] 从账本移除一个成员。target_openid 是被移除者的 openid。
+    只有账本创建者(owner)能执行。普通成员调用会被拒绝。"""
+    ok, msg = db.admin_remove_member(openid, target_openid)
+    return f"✅ {msg}" if ok else f"操作失败：{msg}"
+
+
+@tool
+def admin_rename_ledger(openid: str, new_name: str) -> str:
+    """[仅管理员] 修改账本名。new_name 是新账本名。只有账本 owner 能执行。"""
+    ok, msg = db.admin_rename_ledger(openid, new_name)
+    return f"✅ {msg}" if ok else f"操作失败：{msg}"
+
+
+@tool
+def admin_delete_ledger(openid: str) -> str:
+    """[仅管理员] 删除当前账本。只有账本 owner 能执行。删除后成员关系清空，账目保留。"""
+    ok, msg = db.admin_delete_ledger(openid)
+    return f"✅ {msg}" if ok else f"操作失败：{msg}"
+
+
 @tool
 def ask_clarify(question: str) -> str:
     """当信息不足（缺金额、分类不明、口令没给全）时，向用户反问澄清。传入要问的话。"""
     return f"<澄清> {question}"
 
 
-AGENT_TOOLS = [query_transactions, record_transactions, create_ledger, join_ledger, get_my_ledgers, ask_clarify]
+AGENT_TOOLS = [query_transactions, record_transactions, create_ledger, join_ledger, get_my_ledgers,
+               admin_remove_member, admin_rename_ledger, admin_delete_ledger, ask_clarify]
 
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
@@ -158,9 +183,12 @@ AGENT_SYSTEM_PROMPT = """\
 你有以下工具可用：
 - record_transactions(openid, transactions): 记一笔或多笔账（支出/收入），会自动记到用户所属账本
 - query_transactions(openid, date_from, date_to, ...): 查询账单（只读），只查用户所属账本
-- create_ledger(openid, name): 创建账本，返回邀请口令
-- join_ledger(openid, invite_code): 凭口令加入别人的账本
+- create_ledger(openid, name): 创建账本，返回邀请口令（创建者自动成为该账本管理员）
+- join_ledger(openid, invite_code): 凭口令加入别人的账本（加入者为普通成员）
 - get_my_ledgers(openid): 列出用户加入的所有账本
+- admin_remove_member(openid, target_openid): [仅管理员] 移除账本成员
+- admin_rename_ledger(openid, new_name): [仅管理员] 改账本名
+- admin_delete_ledger(openid): [仅管理员] 删除账本
 - ask_clarify(question): 信息不足时反问用户
 
 预设分类（只能用这些，拿不准归「其他」）：
@@ -173,8 +201,9 @@ AGENT_SYSTEM_PROMPT = """\
 3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取
 4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger
 5. 用户说「我有哪些账本」→ 用 get_my_ledgers
-6. 信息不足（缺金额/分类不明）→ 用 ask_clarify 反问，直到信息够了再继续
-7. 不确定用户在干嘛 → 友好打招呼，提示用法
+6. 用户说「移除成员 / 删掉某人」→ 用 admin_remove_member；「改账本名」→ admin_rename_ledger；「删账本」→ admin_delete_ledger。**这类管理操作只有账本 owner 能做，普通成员调用会被工具拒绝（工具会返回拒绝信息，照实回复即可）**
+7. 信息不足（缺金额/分类不明）→ 用 ask_clarify 反问，直到信息够了再继续
+8. 不确定用户在干嘛 → 友好打招呼，提示用法
 
 规则：
 - 金额默认单位「元」
