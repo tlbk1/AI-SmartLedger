@@ -2,14 +2,14 @@
 agent.py — Loop Agent（循环决策核心）
 
 目标：把「固定路由」升级为「会循环思考、调用工具、观察结果、自主决定下一步」的 Agent。
+共账能力：agent 通过工具感知 openid，记账/查账按账本隔离，支持口令制建账本/加入账本。
 
 用 LangGraph 的 create_react_agent 搭标准 ReAct 循环：
     思考 → 调用工具 → 观察结果 → 再思考 → ... → 直到 agent 认为「任务完成」
 
 设计依据：
 - 需求文档 5 章：意图识别 → 记账/查账/闲聊
-- 技术方案：tool calling 强制结构化输出
-- 方案文档 docs/loop-agent-改造方案.md
+- 方案文档 docs/共账-agent设计方案.md
 """
 
 import logging
@@ -26,19 +26,13 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # ──────────────────────────── LLM 客户端 ────────────────────────────
 
-# 模块级就加载 .env，避免被其他模块先 import 时 os.environ 为空
-load_dotenv()
+load_dotenv()  # 模块级就加载，避免被其他模块先 import 时 os.environ 为空
 
-# 懒加载 ChatOpenAI（langchain 版，供 create_react_agent 用）
 _model_obj = None
 
 
 def _get_model():
-    """
-    返回 langchain 的 ChatOpenAI，指向公司中转站。
-    用 ChatOpenAI 而不是原生 openai.OpenAI，因为 create_react_agent 需要
-    能 .bind_tools() 的 BaseChatModel。
-    """
+    """langchain 的 ChatOpenAI（供 create_react_agent 用，需能 .bind_tools()）。"""
     global _model_obj
     if _model_obj is None:
         from langchain_openai import ChatOpenAI
@@ -56,22 +50,30 @@ def _model_name() -> str:
 
 
 # ──────────────────────────── Agent 工具 ────────────────────────────
-# 这里定义 agent 能调用的工具。用 `tool` 装饰器让 langchain 自动生成 schema。
-# 工具内部复用了 db.py 的现有能力（query / insert_many），保持数据层不变。
+# 所有工具都接收 openid，用于定位用户所属账本（数据隔离可靠）。
+# 用 tool 装饰器让 langchain 自动生成 schema。
 
 from langchain_core.tools import tool
 
 
+# ── 记账（带账本隔离）──
+
 @tool
 def query_transactions(
+    openid: str,
     date_from: str,
     date_to: str,
     category: Optional[str] = None,
     type_filter: Optional[str] = None,
     limit: int = 20,
 ) -> str:
-    """查询账单记录（只读）。根据日期范围必填；分类和类型可选。返回 JSON 字符串。"""
-    rows = db.query(
+    """查询账单记录（只读）。用 openid 定位用户所属账本，只查该账本的记录。
+    date_from/date_to 必填，格式 YYYY-MM-DD；分类和类型可选。返回 JSON 字符串。"""
+    ledger_id = db.get_user_ledger_id(openid)
+    if ledger_id is None:
+        return "你还没有加入任何账本，请先创建或加入一个账本。"
+    rows = db.query_by_ledger(
+        ledger_id=ledger_id,
         date_from=date_from,
         date_to=date_to,
         category=category,
@@ -83,17 +85,14 @@ def query_transactions(
 
 
 @tool
-def record_transactions(transactions: list) -> str:
-    """一次性记录一笔或多笔账单（整批事务，全成全不记）。
-
-    transactions 是列表，每项包含：
-      type: 'expense' 或 'income'
-      amount: 金额（元）
-      category: 分类（餐饮/交通/购物/居住/娱乐/医疗/其他/工资/外快/其他）
-      note: 备注（可选）
-      happened_at: 发生时间 ISO 字符串（可选，默认现在）
-    成功返回 "✓ 已记 N 笔"，失败返回错误信息。
-    """
+def record_transactions(openid: str, transactions: list) -> str:
+    """一次性记录一笔或多笔账单（整批事务，全成全不记）。用 openid 定位所属账本。
+    transactions 每项: type(expense/income), amount, category, note(可选), happened_at(可选)。
+    成功返回确认，用户还未加入账本则提示先加。"""
+    ledger_id = db.get_user_ledger_id(openid)
+    if ledger_id is None:
+        return "你还没有加入任何账本，请先创建或加入一个账本。"
+    user_id = db.get_or_create_user(openid)
     txns = []
     for t in transactions:
         txns.append(
@@ -105,45 +104,83 @@ def record_transactions(transactions: list) -> str:
                 happened_at=str(t.get("happened_at") or ""),
             )
         )
-    ok = db.insert_many(txns)
+    ok = db.insert_many_for_ledger(ledger_id, user_id, txns)
     return f"✓ 已记 {len(txns)} 笔" if ok else "没记上，请重试"
+
+
+# ── 账本管理（共账核心）──
+
+@tool
+def create_ledger(openid: str, name: str) -> str:
+    """创建一个新的账本，创建者为账本 owner。返回邀请口令（别人凭口令加入）。
+    name 是账本名，如「我们家」「旅行账」。"""
+    ok, result = db.create_ledger(openid, name)
+    if ok:
+        return f"✅ 已创建账本「{name}」，邀请口令是 {result}，把这口令发给要加入的人即可。"
+    return f"创建失败：{result}"
+
+
+@tool
+def join_ledger(openid: str, invite_code: str) -> str:
+    """凭邀请口令加入别人的账本，成为 member。invite_code 是对方创建账本时给你的口令。"""
+    ok, msg = db.join_ledger(openid, invite_code)
+    if ok:
+        return f"✅ {msg}，从此你们可以共同记账。"
+    return f"加入失败：{msg}"
+
+
+@tool
+def get_my_ledgers(openid: str) -> str:
+    """列出当前用户加入的所有账本及邀请口令。"""
+    ledgers = db.get_my_ledgers(openid)
+    if not ledgers:
+        return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
+    lines = [f"- {l['name']}（口令 {l['invite_code']}，{l['role']}）" for l in ledgers]
+    return "你加入的账本：\n" + "\n".join(lines)
 
 
 @tool
 def ask_clarify(question: str) -> str:
-    """当信息不足（比如缺金额、分类不明）时，向用户反问澄清。传入要问的话。"""
+    """当信息不足（缺金额、分类不明、口令没给全）时，向用户反问澄清。传入要问的话。"""
     return f"<澄清> {question}"
 
 
-AGENT_TOOLS = [query_transactions, record_transactions, ask_clarify]
+AGENT_TOOLS = [query_transactions, record_transactions, create_ledger, join_ledger, get_my_ledgers, ask_clarify]
 
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
 
 AGENT_SYSTEM_PROMPT = """\
-你是一个微信记账机器人的核心 Agent。用户用自然语言告诉你他的收支情况，你负责处理成结果。
+你是一个微信记账机器人的核心 Agent。用户用自然语言告诉你收支情况，你负责处理成结果。
 
 当前时间（Asia/Shanghai）：{now}
 
 你有以下工具可用：
-- query_transactions: 查询账单（只读），根据日期/分类/类型查记录
-- record_transactions: 记一笔或多笔账（支出/收入）
-- ask_clarify: 信息不足时反问用户
+- record_transactions(openid, transactions): 记一笔或多笔账（支出/收入），会自动记到用户所属账本
+- query_transactions(openid, date_from, date_to, ...): 查询账单（只读），只查用户所属账本
+- create_ledger(openid, name): 创建账本，返回邀请口令
+- join_ledger(openid, invite_code): 凭口令加入别人的账本
+- get_my_ledgers(openid): 列出用户加入的所有账本
+- ask_clarify(question): 信息不足时反问用户
 
 预设分类（只能用这些，拿不准归「其他」）：
 - 支出（7类）：餐饮、交通、购物、居住、娱乐、医疗、其他
 - 收入（3类）：工资、外快、其他
 
 工作方式（重要）：
-1. 用户说记账 → 先用 record_transactions 记下，然后简单确认
-2. 用户说查账 → 先用 query_transactions 查数据，看到结果后总结成自然语言
-3. 信息不足（缺金额/分类不明）→ 用 ask_clarify 反问用户，直到信息够了再继续
-4. 不确定用户在干嘛 → 友好地打招呼，提示用法
+1. 用户说记账 → 用 record_transactions 记下（openid 用当前用户），然后简单确认
+2. 用户说查账 → 用 query_transactions 查数据（openid 用当前用户），看到结果后总结成自然语言
+3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取
+4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger
+5. 用户说「我有哪些账本」→ 用 get_my_ledgers
+6. 信息不足（缺金额/分类不明）→ 用 ask_clarify 反问，直到信息够了再继续
+7. 不确定用户在干嘛 → 友好打招呼，提示用法
 
 规则：
 - 金额默认单位「元」
 - 时间默认「现在」，支持「昨天」「上周五」等相对时间
 - 每步只调用最需要的工具，不要重复查询
+- openid 只作为工具参数传给工具代码，你在回复里不要提及它
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
 
@@ -169,9 +206,7 @@ def _get_agent():
 
 # ──────────────────────────── 主入口 ────────────────────────────
 
-# 失败哨兵：agent 崩溃/报错时返回这个特殊标记，
-# 上游 graph.py 识别到它就触发「三分支兜底」。
-# 用极不可能出现在正常回复中的字符串，防止与真实回答撞车。
+# 失败哨兵：agent 崩溃/报错时返回这个特殊标记，上游 graph.py 识别到它就触发「三分支兜底」。
 AGENT_FAILURE = "\x00__AGENT_FAILED__\x00"
 
 
@@ -184,16 +219,19 @@ def run_agent(openid: str, content: str) -> str:
     """
     try:
         agent = _get_agent()
-        # 调用编译好的 agent，传入用户消息
-        result = agent.invoke({"messages": [{"role": "user", "content": content}]})
-        # 取最后一条 assistant 消息作为回复
+        # 关键：把 openid 拼进用户消息，让 agent 一定能看到并有据可依填进工具参数。
+        # （工具参数需要 openid 才能定位账本；放 system 里可能被 agent 忽略，放 user 内容更可靠）
+        user_msg = f"[当前用户 openid = {openid}]\n{content}"
+        result = agent.invoke({
+            "messages": [
+                {"role": "user", "content": user_msg},
+            ]
+        })
         messages = result.get("messages", [])
         if messages:
-            # 找到最后一条非工具的消息
             for m in reversed(messages):
                 if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
                     return m.content
-        # agent 正常调用但没产出有效内容（比如完全没工具调用、空回复）
         logger.warning("agent 返回空内容，标记为失败: %s", content[:30])
         return AGENT_FAILURE
     except Exception as e:
