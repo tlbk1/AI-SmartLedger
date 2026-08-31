@@ -56,10 +56,13 @@ def process_message(openid: str, content: str) -> str:
         prefix = "[补发] " + "\n[补发] ".join(undelivered) + "\n\n"
 
     # 优先走 Loop Agent
-    try:
-        reply = agent_mod.run_agent(openid, content)
-    except Exception as e:
-        logger.error("agent 循环失败，回退固定路由: %s", e, exc_info=True)
+    reply = agent_mod.run_agent(openid, content)
+
+    # 关键：识别「失败哨兵」→ 才走真正的三分支兜底
+    # 只依赖异常(except)是不够的——agent 会把报错"吞"成一句人话，
+    # 导致上层永远接不到失败信号。用哨兵标记明确区分"失败"和"正常回答"。
+    if reply == agent_mod.AGENT_FAILURE:
+        logger.warning("agent 返回失败哨兵，走三分支兜底: %s", content[:30])
         reply = _dispatch_fallback(
             {"openid": openid, "content": content, "now": now_str}
         )

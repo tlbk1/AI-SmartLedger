@@ -169,10 +169,18 @@ def _get_agent():
 
 # ──────────────────────────── 主入口 ────────────────────────────
 
+# 失败哨兵：agent 崩溃/报错时返回这个特殊标记，
+# 上游 graph.py 识别到它就触发「三分支兜底」。
+# 用极不可能出现在正常回复中的字符串，防止与真实回答撞车。
+AGENT_FAILURE = "\x00__AGENT_FAILED__\x00"
+
+
 def run_agent(openid: str, content: str) -> str:
     """
     处理一条用户消息（agent 主入口）。
     被 main.py 的线程池调用（同步函数）。返回回复文本。
+
+    失败时返回 AGENT_FAILURE 哨兵（不抛异常），由 graph.py 识别并走三分支兜底。
     """
     try:
         agent = _get_agent()
@@ -185,7 +193,9 @@ def run_agent(openid: str, content: str) -> str:
             for m in reversed(messages):
                 if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
                     return m.content
-        return "抱歉，我没理解，能再说一遍吗？"
+        # agent 正常调用但没产出有效内容（比如完全没工具调用、空回复）
+        logger.warning("agent 返回空内容，标记为失败: %s", content[:30])
+        return AGENT_FAILURE
     except Exception as e:
         logger.error("agent 处理失败: %s", e, exc_info=True)
-        return "出了点问题，请稍后再试。"
+        return AGENT_FAILURE
