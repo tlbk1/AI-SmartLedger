@@ -209,6 +209,9 @@ def init():
         # 软删除：ledgers.deleted_at（任务2，幂等补列）；NULL = 未删除
         _add_column_if_missing(conn, "ledgers", "deleted_at", "TEXT")
 
+        # 任务3：users.current_ledger_id 显式记录用户当前账本（默认账本创建时设为它）
+        _add_column_if_missing(conn, "users", "current_ledger_id", "INTEGER")
+
 
 def _add_column_if_missing(conn, table: str, column: str, col_type: str):
     """若表里还没有某列，则添加（幂等，兼容旧库）。"""
@@ -326,12 +329,24 @@ def _gen_invite_code(conn) -> str:
 def get_or_create_user(openid: str, nickname: str = "") -> int:
     """根据 openid 找到用户，没有则创建。返回 user_id。
 
-    任务2：新用户创建时自动建一个默认账本「我的账本」（该用户 role=owner），
-    保证任何用户任何时刻至少有一个账本——记账/查账永远不会落到空账本。
+    任务2：新用户创建时自动建一个默认账本「我的账本」（该用户 role=owner）。
+    任务3：把默认账本设为用户的 current_ledger_id（显式当前账本）。
     """
     with _connect() as conn:
-        row = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
+        row = conn.execute("SELECT id, current_ledger_id FROM users WHERE openid=?", (openid,)).fetchone()
         if row:
+            # 老用户（current_ledger_id 为 NULL）回填为其最近账本，保证有当前账本
+            if row["current_ledger_id"] is None:
+                # 找一个未软删除的账本回填；没有则建默认
+                led = conn.execute("""
+                    SELECT lm.ledger_id FROM ledger_members lm
+                    JOIN ledgers l ON l.id=lm.ledger_id
+                    WHERE lm.user_id=? AND l.deleted_at IS NULL
+                    ORDER BY lm.id DESC LIMIT 1
+                """, (row["id"],)).fetchone()
+                if led:
+                    conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (led["ledger_id"], row["id"]))
+                    conn.commit()
             return row["id"]
         now = datetime.now(SHANGHAI).isoformat()
         cur = conn.execute(
@@ -350,15 +365,27 @@ def get_or_create_user(openid: str, nickname: str = "") -> int:
             "INSERT INTO ledger_members (ledger_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
             (ledger_id, user_id, now),
         )
+        conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (ledger_id, user_id))
         conn.commit()
         return user_id
 
 
 def get_user_ledger_id(openid: str) -> Optional[int]:
-    """根据 openid 找用户当前账本 id（多账本时默认最近加入的）。
+    """根据 openid 找用户「当前账本」id（任务3：读 users.current_ledger_id）。
     只返回未软删除的账本；找不到返回 None。"""
     with _connect() as conn:
         row = conn.execute("""
+            SELECT u.current_ledger_id
+            FROM users u
+            WHERE u.openid = ?
+        """, (openid,)).fetchone()
+        if row and row["current_ledger_id"] is not None:
+            # 校验账本未被软删除
+            l = conn.execute("SELECT 1 FROM ledgers WHERE id=? AND deleted_at IS NULL", (row["current_ledger_id"],)).fetchone()
+            if l:
+                return row["current_ledger_id"]
+        # 兜底：回退到最近加入的未软删除账本
+        fallback = conn.execute("""
             SELECT lm.ledger_id
             FROM ledger_members lm
             JOIN users u ON u.id = lm.user_id
@@ -367,14 +394,14 @@ def get_user_ledger_id(openid: str) -> Optional[int]:
             ORDER BY lm.id DESC
             LIMIT 1
         """, (openid,)).fetchone()
-        return row["ledger_id"] if row else None
+        return fallback["ledger_id"] if fallback else None
 
 
 def create_ledger(openid: str, name: str) -> tuple[bool, str]:
-    """创建账本，创建者为 owner。返回 (成功?, 结果消息或口令)。"""
+    """创建账本，创建者为 owner，并设为该用户的当前账本（任务3）。
+    返回 (成功?, 结果消息或口令)。"""
     user_id = get_or_create_user(openid)
     with _connect() as conn:
-        # 检查用户是否已有同名账本（可选，暂不强制）
         invite = _gen_invite_code(conn)
         now = datetime.now(SHANGHAI).isoformat()
         cur = conn.execute(
@@ -386,17 +413,20 @@ def create_ledger(openid: str, name: str) -> tuple[bool, str]:
             "INSERT INTO ledger_members (ledger_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
             (ledger_id, user_id, now),
         )
+        # 任务3：新创建的账本设为当前账本
+        conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (ledger_id, user_id))
         conn.commit()
         return True, invite
 
 
 def join_ledger(openid: str, invite_code: str) -> tuple[bool, str]:
-    """凭口令加入账本，成为 member。返回 (成功?, 结果消息)。"""
+    """凭口令加入账本，成为 member。任务3：加入后不自动切换当前账本。
+    返回 (成功?, 结果消息)。"""
     user_id = get_or_create_user(openid)
     code = invite_code.strip().lower()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, name FROM ledgers WHERE invite_code=?", (code,)
+            "SELECT id, name FROM ledgers WHERE invite_code=? AND deleted_at IS NULL", (code,)
         ).fetchone()
         if row is None:
             return False, "口令不存在，请核对"
@@ -413,7 +443,8 @@ def join_ledger(openid: str, invite_code: str) -> tuple[bool, str]:
             (ledger_id, user_id, now),
         )
         conn.commit()
-        return True, f"已加入账本「{name}」"
+        # 不自动切换 current_ledger_id；提示用户是否要切换
+        return True, f"已加入账本「{name}」，当前记账账本未变。如需切换请说「切换到账本 {name}」"
 
 
 def get_my_ledgers(openid: str) -> list[dict]:
@@ -428,6 +459,33 @@ def get_my_ledgers(openid: str) -> list[dict]:
             ORDER BY lm.id DESC
         """, (user_id,)).fetchall()
         return [dict(r) for r in rows]
+
+
+def switch_ledger(openid: str, ledger_name: str) -> tuple[bool, str]:
+    """任务3：把用户的当前账本切换到指定的账本（按名查找，必须是用户加入的）。"""
+    user_id = get_or_create_user(openid)
+    with _connect() as conn:
+        row = conn.execute("""
+            SELECT l.id, l.name FROM ledger_members lm
+            JOIN ledgers l ON l.id = lm.ledger_id
+            WHERE lm.user_id = ? AND l.deleted_at IS NULL AND l.name = ?
+            ORDER BY lm.id DESC LIMIT 1
+        """, (user_id, ledger_name)).fetchone()
+        if row is None:
+            return False, f"你还没有加入叫「{ledger_name}」的账本"
+        conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (row["id"], user_id))
+        conn.commit()
+        return True, f"已切换到账本「{row['name']}」，后续记账/查账都在这个账本"
+
+
+def get_current_ledger_name(openid: str) -> str:
+    """取用户当前账本名（用于 agent 回复显示）。无则返回空串。"""
+    ledger_id = get_user_ledger_id(openid)
+    if ledger_id is None:
+        return ""
+    with _connect() as conn:
+        row = conn.execute("SELECT name FROM ledgers WHERE id=?", (ledger_id,)).fetchone()
+        return row["name"] if row else ""
 
 
 # ─── 记账 / 查账（带账本隔离）───
@@ -527,17 +585,26 @@ def _get_user_id_by_openid(conn, openid: str) -> Optional[int]:
     return row["id"] if row else None
 
 
-def admin_remove_member(openid: str, target_openid: str) -> tuple[bool, str]:
-    """owner 移除账本里的某个成员。返回 (成功?, 消息)。"""
+def admin_remove_member(openid: str, target_nickname: str) -> tuple[bool, str]:
+    """owner 移除账本里的某个成员（按昵称在账本内查人，任务5）。
+    返回 (成功?, 消息)。"""
     ledger_id = get_user_ledger_id(openid)
     if ledger_id is None:
         return False, "你没有加入任何账本"
     if not is_ledger_admin(openid):
         return False, "只有管理员才能移除成员"
     with _connect() as conn:
-        target_uid = _get_user_id_by_openid(conn, target_openid)
-        if target_uid is None:
-            return False, "目标用户不存在"
+        # 在账本内按昵称找目标用户（注意：不在账本里的同名用户不误伤）
+        row = conn.execute("""
+            SELECT u.id, u.nickname
+            FROM ledger_members lm
+            JOIN users u ON u.id = lm.user_id
+            WHERE lm.ledger_id = ? AND u.nickname = ?
+            ORDER BY lm.id DESC LIMIT 1
+        """, (ledger_id, target_nickname)).fetchone()
+        if row is None:
+            return False, f"账本里没有叫「{target_nickname}」的成员"
+        target_uid = row["id"]
         # 不能移除 owner 自己
         owner_uid = conn.execute(
             "SELECT lm.user_id FROM ledger_members lm WHERE lm.ledger_id=? AND lm.role='owner'",
@@ -552,7 +619,32 @@ def admin_remove_member(openid: str, target_openid: str) -> tuple[bool, str]:
         conn.commit()
         if cur.rowcount == 0:
             return False, "该用户不在这个账本里"
-        return True, "已移除该成员"
+        return True, f"已移除成员 {target_nickname}"
+
+
+def set_nickname(openid: str, nickname: str) -> bool:
+    """任务5：设置/更新用户昵称。"""
+    user_id = get_or_create_user(openid)
+    with _connect() as conn:
+        conn.execute("UPDATE users SET nickname=? WHERE id=?", (nickname, user_id))
+        conn.commit()
+        return True
+
+
+def list_ledger_members(openid: str) -> list[dict]:
+    """任务5：列出当前账本的成员（昵称 + 角色）。"""
+    ledger_id = get_user_ledger_id(openid)
+    if ledger_id is None:
+        return []
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT u.nickname, u.openid, lm.role
+            FROM ledger_members lm
+            JOIN users u ON u.id = lm.user_id
+            WHERE lm.ledger_id = ?
+            ORDER BY (lm.role='owner') DESC, lm.id
+        """, (ledger_id,)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def admin_rename_ledger(openid: str, new_name: str) -> tuple[bool, str]:

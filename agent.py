@@ -38,17 +38,19 @@ def _get_model():
     global _model_obj
     if _model_obj is None:
         from langchain_openai import ChatOpenAI
+        from config import DEFAULT_MODEL
         _model_obj = ChatOpenAI(
             base_url=os.environ.get("LLM_BASE_URL", "https://ccc.szprize.cn/v1"),
             api_key=os.environ["LLM_API_KEY"],
-            model=os.environ.get("LLM_MODEL", "deepseek-v4-flash"),
+            model=os.environ.get("LLM_MODEL", DEFAULT_MODEL),
             temperature=0,
         )
     return _model_obj
 
 
 def _model_name() -> str:
-    return os.environ.get("LLM_MODEL", "deepseek-v4-flash")
+    from config import DEFAULT_MODEL
+    return os.environ.get("LLM_MODEL", DEFAULT_MODEL)
 
 
 # ──────────────────────────── 工具工厂（闭包注入 openid） ────────────────────────────
@@ -136,16 +138,43 @@ def make_tools(openid: str) -> list:
         ledgers = db.get_my_ledgers(openid)
         if not ledgers:
             return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
+        cur = db.get_current_ledger_name(openid)
         lines = [f"- {l['name']}（口令 {l['invite_code']}，{l['role']}）" for l in ledgers]
-        return "你加入的账本：\n" + "\n".join(lines)
+        return f"你加入的账本（当前：{cur or '无'}）：\n" + "\n".join(lines)
+
+    @tool
+    def switch_ledger(ledger_name: str) -> str:
+        """把当前记账/查账账本切换到指定账本。ledger_name 是要切换到的账本名。
+        只在用户已加入的账本间切换；不会自动切换，用户明确要求才切。"""
+        ok, msg = db.switch_ledger(openid, ledger_name)
+        return f"✅ {msg}" if ok else f"切换失败：{msg}"
 
     # ── 管理操作（仅账本 owner / 管理员可用）──
 
     @tool
-    def admin_remove_member(target_openid: str) -> str:
-        """[仅管理员] 从账本移除一个成员。target_openid 是被移除者的 openid。
+    def list_members(show: str) -> str:
+        """列出当前账本的所有成员（昵称 + 角色），show 填 'y' 即可。"""
+        members = db.list_ledger_members(openid)
+        if not members:
+            return "当前账本还没有成员。"
+        lines = []
+        for m in members:
+            label = "管理员" if m["role"] == "owner" else "成员"
+            name = m["nickname"] or m["openid"][:8]
+            lines.append(f"- {name}（{label}）")
+        return "账本成员：\n" + "\n".join(lines)
+
+    @tool
+    def set_nickname(nickname: str) -> str:
+        """设置当前用户的昵称，账本成员会用它来展示和识别。nickname 是用户昵称。"""
+        db.set_nickname(openid, nickname)
+        return f"✅ 已把你的昵称设为「{nickname}」"
+
+    @tool
+    def admin_remove_member(target_nickname: str) -> str:
+        """[仅管理员] 从账本移除一个成员，按昵称查人。target_nickname 是被移除者的昵称。
         只有账本创建者(owner)能执行。普通成员调用会被拒绝。"""
-        ok, msg = db.admin_remove_member(openid, target_openid)
+        ok, msg = db.admin_remove_member(openid, target_nickname)
         return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
     @tool
@@ -167,8 +196,8 @@ def make_tools(openid: str) -> list:
 
     return [
         query_transactions, record_transactions, create_ledger, join_ledger,
-        get_my_ledgers, admin_remove_member, admin_rename_ledger, admin_delete_ledger,
-        ask_clarify,
+        get_my_ledgers, switch_ledger, list_members, set_nickname,
+        admin_remove_member, admin_rename_ledger, admin_delete_ledger, ask_clarify,
     ]
 
 
@@ -183,9 +212,12 @@ AGENT_SYSTEM_PROMPT = """\
 - record_transactions(transactions): 记一笔或多笔账（支出/收入），会自动记到当前用户所属账本
 - query_transactions(date_from, date_to, ...): 查询账单（只读），只查当前用户所属账本
 - create_ledger(name): 创建账本，返回邀请口令（创建者自动成为该账本管理员）
-- join_ledger(invite_code): 凭口令加入别人的账本（加入者为普通成员）
-- get_my_ledgers(): 列出当前用户加入的所有账本
-- admin_remove_member(target_openid): [仅管理员] 移除账本成员
+- join_ledger(invite_code): 凭口令加入别人的账本（加入者为普通成员，不自动切换当前账本）
+- get_my_ledgers(): 列出当前用户加入的所有账本及当前是哪个
+- switch_ledger(ledger_name): 把当前记账/查账账本切换到指定账本（用户明确要求才切）
+- list_members(): 列出当前账本的成员（昵称+角色）
+- set_nickname(nickname): 设置当前用户的昵称
+- admin_remove_member(target_nickname): [仅管理员] 按昵称移除账本成员
 - admin_rename_ledger(new_name): [仅管理员] 改账本名
 - admin_delete_ledger(): [仅管理员] 删除账本
 - ask_clarify(question): 信息不足时反问用户
@@ -195,19 +227,23 @@ AGENT_SYSTEM_PROMPT = """\
 - 收入（3类）：工资、外快、其他
 
 工作方式（重要）：
-1. 用户说记账 → 用 record_transactions 记下，然后简单确认
+1. 用户说记账 → 用 record_transactions 记下，然后简单确认（回复时带上当前账本名）
 2. 用户说查账 → 用 query_transactions 查数据，看到结果后总结成自然语言
 3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取
-4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger
+4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger（加入后询问是否要切换过去）
 5. 用户说「我有哪些账本」→ 用 get_my_ledgers
-6. 用户说「移除成员 / 删掉某人」→ 用 admin_remove_member；「改账本名」→ admin_rename_ledger；「删账本」→ admin_delete_ledger。**这类管理操作只有账本 owner 能做，普通成员调用会被工具拒绝（工具会返回拒绝信息，照实回复即可）**
-7. 信息不足（缺金额/分类不明）→ 用 ask_clarify 反问，直到信息够了再继续
-8. 不确定用户在干嘛 → 友好打招呼，提示用法
+6. 用户说「切换到账本 xxx」/「用 xxx 记账」→ 用 switch_ledger
+7. 用户首次加入或想设置称呼 → 用 set_nickname 把昵称存起来，方便账本成员识别
+8. 用户说「有哪些成员/人」→ 用 list_members
+9. 用户说「移除成员 / 删掉某人」→ 用 admin_remove_member（按昵称）；「改账本名」→ admin_rename_ledger；「删账本」→ admin_delete_ledger。**这类管理操作只有账本 owner 能做，普通成员调用会被工具拒绝（工具会返回拒绝信息，照实回复即可）**
+10. 信息不足（缺金额/分类不明/昵称/口令没给全）→ 用 ask_clarify 反问，直到信息够了再继续
+11. 不确定用户在干嘛 → 友好打招呼，提示用法
 
 规则：
 - 金额默认单位「元」
 - 时间默认「现在」，支持「昨天」「上周五」等相对时间
 - 每步只调用最需要的工具，不要重复查询
+- 记账/查账后，如已能取到当前账本名，在回复里可以提一句「（当前账本：xxx）」让用户知道在哪个账本
 - 当前用户身份已由系统绑定，你不需要也无法修改它；不要在回复里提及任何身份标识
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
@@ -245,7 +281,7 @@ def run_agent(openid: str, content: str) -> str:
         history = db.get_chat_history(openid)   # list[{role, content}, ...]
         user_msg = {"role": "user", "content": content}
         messages = history + [user_msg]
-        result = agent.invoke({"messages": messages})
+        result = agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
         # 从 agent 结果里取最后一条 assistant 回复
         result_msgs = result.get("messages", [])
