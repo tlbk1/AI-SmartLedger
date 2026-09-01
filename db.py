@@ -69,6 +69,33 @@ class _TTLCache:
 _seen_cache: _TTLCache = _TTLCache()       # msgid -> True（幂等去重）
 _pending_cache: _TTLCache = _TTLCache()    # openid -> pending dict（对话状态）
 _undelivered: dict[str, list[str]] = {}   # openid -> [未送达文本]（客服消息失败兜底）
+_chat_history_cache: _TTLCache = _TTLCache()   # openid -> list[messages]（任务4：对话记忆）
+
+
+# ──────────────────────────── 对话记忆（任务4：澄清循环） ────────────────────────────
+
+# 每个用户保留最近 N 条消息，供 agent 多轮对话参考（澄清反问后用户补答能接上）。
+_CHAT_HISTORY_MAX = 20          # 最近消息条数
+_CHAT_HISTORY_TTL = 1800        # 30 分钟
+
+
+def get_chat_history(openid: str) -> list:
+    """取该用户最近的对话历史（列表，可为空）。"""
+    return _chat_history_cache.get(openid) or []
+
+
+def append_chat_history(openid: str, messages: list, maxlen: int = _CHAT_HISTORY_MAX):
+    """把新消息追加到该用户历史，并裁剪到最近 maxlen 条。"""
+    hist = get_chat_history(openid)
+    hist.extend(messages)
+    if len(hist) > maxlen:
+        hist = hist[-maxlen:]
+    _chat_history_cache.set(openid, hist, ttl_seconds=_CHAT_HISTORY_TTL)
+
+
+def clear_chat_history(openid: str):
+    """清空该用户对话历史。"""
+    _chat_history_cache.pop(openid)
 
 
 # ──────────────────────────── 幂等去重 ────────────────────────────

@@ -231,24 +231,36 @@ def run_agent(openid: str, content: str) -> str:
     try:
         from langgraph.prebuilt import create_react_agent
         now = __import__("datetime").datetime.now(SHANGHAI).isoformat()
+        # 任务2保障：先确保用户已创建 + 自动有默认账本。
+        # 否则首次交互(尤其反问金额阶段)用户还没被创建，工具找不到账本，记不上账。
+        db.get_or_create_user(openid)
         # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
         agent = create_react_agent(
             model=_get_model(),
             tools=make_tools(openid),          # openid 闭包注入，LLM 不可见
             prompt=AGENT_SYSTEM_PROMPT.format(now=now),
         )
-        result = agent.invoke({
-            "messages": [
-                {"role": "user", "content": content},   # 不拼 openid，杜绝注入
-            ]
-        })
-        messages = result.get("messages", [])
-        if messages:
-            for m in reversed(messages):
-                if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
-                    return m.content
-        logger.warning("agent 返回空内容，标记为失败: %s", content[:30])
-        return AGENT_FAILURE
+        # 任务4：对话记忆——取该用户历史，拼上新消息一起给 agent，
+        # 澄清反问后用户补答能接上（不然 agent 不知道之前问过什么）。
+        history = db.get_chat_history(openid)   # list[{role, content}, ...]
+        user_msg = {"role": "user", "content": content}
+        messages = history + [user_msg]
+        result = agent.invoke({"messages": messages})
+
+        # 从 agent 结果里取最后一条 assistant 回复
+        result_msgs = result.get("messages", [])
+        reply = ""
+        for m in reversed(result_msgs):
+            if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
+                reply = m.content
+                break
+        if not reply:
+            logger.warning("agent 返回空内容，标记为失败: %s", content[:30])
+            return AGENT_FAILURE
+
+        # 追加本轮 user + assistant 回历史
+        db.append_chat_history(openid, [user_msg, {"role": "assistant", "content": reply}])
+        return reply
     except Exception as e:
         logger.error("agent 处理失败: %s", e, exc_info=True)
         return AGENT_FAILURE
