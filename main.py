@@ -39,6 +39,18 @@ load_dotenv()  # 读取 .env
 WECHAT_TIMEOUT = 4.5  # 秒；给微信 5 秒约束留 0.5 秒余量
 
 
+def _do_push_customer(openid: str, text: str):
+    """同步推送客服消息（慢路径兜底）。在事件循环外线程执行（asyncio.to_thread）。
+    推送失败（超48h等）→ 入队下次补发。"""
+    try:
+        ok = wechat.send_customer_message(openid, text)
+        if not ok:
+            db.enqueue_undelivered(openid, text)
+            logger.info("客服消息未送达，已入队: openid=%s", openid)
+    except Exception:
+        logger.exception("客服消息推送异常: openid=%s", openid)
+
+
 # ──────────────────────────── FastAPI lifespan ────────────────────────────
 
 @asynccontextmanager
@@ -147,7 +159,9 @@ async def wechat_message(request: Request):
         logger.warning("处理超时 %ss，走慢路径: msgid=%s", WECHAT_TIMEOUT, msg_id)
 
         def _on_done(t: asyncio.Task):
-            """后台线程完成时触发：推送客服消息。"""
+            """后台线程完成时触发：推送客服消息。
+            用 create_task(to_thread(...)) 把同步 HTTP 推送挪到线程池，
+            避免卡住事件循环（send_customer_message 最多可卡约10秒）。"""
             if t.cancelled():
                 return
             exc = t.exception()
@@ -156,11 +170,10 @@ async def wechat_message(request: Request):
                 return
             reply_text = t.result()
             if reply_text:
-                ok = wechat.send_customer_message(openid, reply_text)
-                if not ok:
-                    # 推送失败（超48h等）→ 入队下次补发
-                    db.enqueue_undelivered(openid, reply_text)
-                    logger.info("客服消息未送达，已入队: openid=%s", openid)
+                # 异步丢到线程池推送，不阻塞事件循环
+                asyncio.create_task(
+                    asyncio.to_thread(_do_push_customer, openid, reply_text)
+                )
 
         task.add_done_callback(_on_done)
         return PlainTextResponse("")

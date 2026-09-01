@@ -50,7 +50,8 @@ def _get_client() -> OpenAI:
 
 
 def _model() -> str:
-    return os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+    from config import DEFAULT_MODEL
+    return os.environ.get("LLM_MODEL", DEFAULT_MODEL)
 
 
 # ──────────────────────────── Prompt 常量 ────────────────────────────
