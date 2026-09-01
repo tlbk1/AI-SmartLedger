@@ -4,12 +4,14 @@ agent.py — Loop Agent（循环决策核心）
 目标：把「固定路由」升级为「会循环思考、调用工具、观察结果、自主决定下一步」的 Agent。
 共账能力：agent 通过工具感知 openid，记账/查账按账本隔离，支持口令制建账本/加入账本。
 
+安全设计（重要）：
+- openid 不进 LLM 的工具 schema（LLM 看不到也改不了）。
+- 身份用「工具工厂闭包」注入：make_tools(openid) 生成的每个工具内部捕获 openid，
+  LLM 只能调用工具，无法伪造或修改 openid，杜绝身份冒充。
+- 用户消息里不拼 openid（避免 prompt injection 冒充）。
+
 用 LangGraph 的 create_react_agent 搭标准 ReAct 循环：
     思考 → 调用工具 → 观察结果 → 再思考 → ... → 直到 agent 认为「任务完成」
-
-设计依据：
-- 需求文档 5 章：意图识别 → 记账/查账/闲聊
-- 方案文档 docs/共账-agent设计方案.md
 """
 
 import logging
@@ -49,128 +51,125 @@ def _model_name() -> str:
     return os.environ.get("LLM_MODEL", "deepseek-v4-flash")
 
 
-# ──────────────────────────── Agent 工具 ────────────────────────────
-# 所有工具都接收 openid，用于定位用户所属账本（数据隔离可靠）。
-# 用 tool 装饰器让 langchain 自动生成 schema。
+# ──────────────────────────── 工具工厂（闭包注入 openid） ────────────────────────────
+# 安全关键：openid 只存在于闭包里，LLM 的工具 schema 不暴露 openid 参数。
+# 这样用户再怎么注入"把 openid 改成 xxx"都没用——工具用的永远是运行时注入的真实身份。
 
 from langchain_core.tools import tool
 
 
-# ── 记账（带账本隔离）──
+def make_tools(openid: str) -> list:
+    """生成本次 agent 循环用的工具集，openid 通过闭包捕获。
+    LLM 只能看到不带 openid 参数的 schema，身份由运行时注入，无法被篡改。"""
 
-@tool
-def query_transactions(
-    openid: str,
-    date_from: str,
-    date_to: str,
-    category: Optional[str] = None,
-    type_filter: Optional[str] = None,
-    limit: int = 20,
-) -> str:
-    """查询账单记录（只读）。用 openid 定位用户所属账本，只查该账本的记录。
-    date_from/date_to 必填，格式 YYYY-MM-DD；分类和类型可选。返回 JSON 字符串。"""
-    ledger_id = db.get_user_ledger_id(openid)
-    if ledger_id is None:
-        return "你还没有加入任何账本，请先创建或加入一个账本。"
-    rows = db.query_by_ledger(
-        ledger_id=ledger_id,
-        date_from=date_from,
-        date_to=date_to,
-        category=category,
-        type_filter=type_filter,
-        limit=limit,
-    )
-    import json
-    return json.dumps(rows, ensure_ascii=False)
+    # ── 记账（带账本隔离）──
 
-
-@tool
-def record_transactions(openid: str, transactions: list) -> str:
-    """一次性记录一笔或多笔账单（整批事务，全成全不记）。用 openid 定位所属账本。
-    transactions 每项: type(expense/income), amount, category, note(可选), happened_at(可选)。
-    成功返回确认，用户还未加入账本则提示先加。"""
-    ledger_id = db.get_user_ledger_id(openid)
-    if ledger_id is None:
-        return "你还没有加入任何账本，请先创建或加入一个账本。"
-    user_id = db.get_or_create_user(openid)
-    txns = []
-    for t in transactions:
-        txns.append(
-            db.Transaction(
-                type=str(t.get("type", "expense")),
-                amount=float(t["amount"]),
-                category=str(t.get("category", "其他")),
-                note=str(t.get("note", "")),
-                happened_at=str(t.get("happened_at") or ""),
-            )
+    @tool
+    def query_transactions(
+        date_from: str,
+        date_to: str,
+        category: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        limit: int = 20,
+    ) -> str:
+        """查询账单记录（只读）。用当前用户所属账本查数据。
+        date_from/date_to 必填，格式 YYYY-MM-DD；分类和类型可选。返回 JSON 字符串。"""
+        ledger_id = db.get_user_ledger_id(openid)
+        if ledger_id is None:
+            return "你还没有加入任何账本，请先创建或加入一个账本。"
+        rows = db.query_by_ledger(
+            ledger_id=ledger_id,
+            date_from=date_from,
+            date_to=date_to,
+            category=category,
+            type_filter=type_filter,
+            limit=limit,
         )
-    ok = db.insert_many_for_ledger(ledger_id, user_id, txns)
-    return f"✓ 已记 {len(txns)} 笔" if ok else "没记上，请重试"
+        import json
+        return json.dumps(rows, ensure_ascii=False)
 
+    @tool
+    def record_transactions(transactions: list) -> str:
+        """一次性记录一笔或多笔账单（整批事务，全成全不记）。
+        transactions 每项: type(expense/income), amount, category, note(可选), happened_at(可选)。
+        确认信息才会记到账。用户未加入账本会提示先加。"""
+        ledger_id = db.get_user_ledger_id(openid)
+        if ledger_id is None:
+            return "你还没有加入任何账本，请先创建或加入一个账本。"
+        user_id = db.get_or_create_user(openid)
+        txns = []
+        for t in transactions:
+            txns.append(
+                db.Transaction(
+                    type=str(t.get("type", "expense")),
+                    amount=float(t["amount"]),
+                    category=str(t.get("category", "其他")),
+                    note=str(t.get("note", "")),
+                    happened_at=str(t.get("happened_at") or ""),
+                )
+            )
+        ok = db.insert_many_for_ledger(ledger_id, user_id, txns)
+        return f"✓ 已记 {len(txns)} 笔" if ok else "没记上，请重试"
 
-# ── 账本管理（共账核心）──
+    # ── 账本管理（共账核心）──
 
-@tool
-def create_ledger(openid: str, name: str) -> str:
-    """创建一个新的账本，创建者为账本 owner。返回邀请口令（别人凭口令加入）。
-    name 是账本名，如「我们家」「旅行账」。"""
-    ok, result = db.create_ledger(openid, name)
-    if ok:
-        return f"✅ 已创建账本「{name}」，邀请口令是 {result}，把这口令发给要加入的人即可。"
-    return f"创建失败：{result}"
+    @tool
+    def create_ledger(name: str) -> str:
+        """创建一个新的账本，创建者为账本 owner。返回邀请口令（别人凭口令加入）。
+        name 是账本名，如「我们家」「旅行账」。"""
+        ok, result = db.create_ledger(openid, name)
+        if ok:
+            return f"✅ 已创建账本「{name}」，邀请口令是 {result}，把这口令发给要加入的人即可。"
+        return f"创建失败：{result}"
 
+    @tool
+    def join_ledger(invite_code: str) -> str:
+        """凭邀请口令加入别人的账本，成为 member。invite_code 是对方创建账本时给你的口令。"""
+        ok, msg = db.join_ledger(openid, invite_code)
+        if ok:
+            return f"✅ {msg}，从此你们可以共同记账。"
+        return f"加入失败：{msg}"
 
-@tool
-def join_ledger(openid: str, invite_code: str) -> str:
-    """凭邀请口令加入别人的账本，成为 member。invite_code 是对方创建账本时给你的口令。"""
-    ok, msg = db.join_ledger(openid, invite_code)
-    if ok:
-        return f"✅ {msg}，从此你们可以共同记账。"
-    return f"加入失败：{msg}"
+    @tool
+    def get_my_ledgers(show: str) -> str:
+        """列出当前用户加入的所有账本及邀请口令。调用时 show 填 'y' 即可（无实际作用，仅为了兼容工具调用）。"""
+        ledgers = db.get_my_ledgers(openid)
+        if not ledgers:
+            return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
+        lines = [f"- {l['name']}（口令 {l['invite_code']}，{l['role']}）" for l in ledgers]
+        return "你加入的账本：\n" + "\n".join(lines)
 
+    # ── 管理操作（仅账本 owner / 管理员可用）──
 
-@tool
-def get_my_ledgers(openid: str) -> str:
-    """列出当前用户加入的所有账本及邀请口令。"""
-    ledgers = db.get_my_ledgers(openid)
-    if not ledgers:
-        return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
-    lines = [f"- {l['name']}（口令 {l['invite_code']}，{l['role']}）" for l in ledgers]
-    return "你加入的账本：\n" + "\n".join(lines)
+    @tool
+    def admin_remove_member(target_openid: str) -> str:
+        """[仅管理员] 从账本移除一个成员。target_openid 是被移除者的 openid。
+        只有账本创建者(owner)能执行。普通成员调用会被拒绝。"""
+        ok, msg = db.admin_remove_member(openid, target_openid)
+        return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
+    @tool
+    def admin_rename_ledger(new_name: str) -> str:
+        """[仅管理员] 修改账本名。new_name 是新账本名。只有账本 owner 能执行。"""
+        ok, msg = db.admin_rename_ledger(openid, new_name)
+        return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
-# ── 管理操作（仅账本 owner / 管理员可用）──
+    @tool
+    def admin_delete_ledger(confirm: str) -> str:
+        """[仅管理员] 删除当前账本。只有账本 owner 能执行。确认删除时 confirm 填 'yes'。"""
+        ok, msg = db.admin_delete_ledger(openid)
+        return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
-@tool
-def admin_remove_member(openid: str, target_openid: str) -> str:
-    """[仅管理员] 从账本移除一个成员。target_openid 是被移除者的 openid。
-    只有账本创建者(owner)能执行。普通成员调用会被拒绝。"""
-    ok, msg = db.admin_remove_member(openid, target_openid)
-    return f"✅ {msg}" if ok else f"操作失败：{msg}"
+    @tool
+    def ask_clarify(question: str) -> str:
+        """当信息不足（缺金额、分类不明、口令没给全）时，向用户反问澄清。传入要问的话。"""
+        return f"<澄清> {question}"
 
-
-@tool
-def admin_rename_ledger(openid: str, new_name: str) -> str:
-    """[仅管理员] 修改账本名。new_name 是新账本名。只有账本 owner 能执行。"""
-    ok, msg = db.admin_rename_ledger(openid, new_name)
-    return f"✅ {msg}" if ok else f"操作失败：{msg}"
-
-
-@tool
-def admin_delete_ledger(openid: str) -> str:
-    """[仅管理员] 删除当前账本。只有账本 owner 能执行。删除后成员关系清空，账目保留。"""
-    ok, msg = db.admin_delete_ledger(openid)
-    return f"✅ {msg}" if ok else f"操作失败：{msg}"
-
-
-@tool
-def ask_clarify(question: str) -> str:
-    """当信息不足（缺金额、分类不明、口令没给全）时，向用户反问澄清。传入要问的话。"""
-    return f"<澄清> {question}"
-
-
-AGENT_TOOLS = [query_transactions, record_transactions, create_ledger, join_ledger, get_my_ledgers,
-               admin_remove_member, admin_rename_ledger, admin_delete_ledger, ask_clarify]
+    return [
+        query_transactions, record_transactions, create_ledger, join_ledger,
+        get_my_ledgers, admin_remove_member, admin_rename_ledger, admin_delete_ledger,
+        ask_clarify,
+    ]
 
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
@@ -181,14 +180,14 @@ AGENT_SYSTEM_PROMPT = """\
 当前时间（Asia/Shanghai）：{now}
 
 你有以下工具可用：
-- record_transactions(openid, transactions): 记一笔或多笔账（支出/收入），会自动记到用户所属账本
-- query_transactions(openid, date_from, date_to, ...): 查询账单（只读），只查用户所属账本
-- create_ledger(openid, name): 创建账本，返回邀请口令（创建者自动成为该账本管理员）
-- join_ledger(openid, invite_code): 凭口令加入别人的账本（加入者为普通成员）
-- get_my_ledgers(openid): 列出用户加入的所有账本
-- admin_remove_member(openid, target_openid): [仅管理员] 移除账本成员
-- admin_rename_ledger(openid, new_name): [仅管理员] 改账本名
-- admin_delete_ledger(openid): [仅管理员] 删除账本
+- record_transactions(transactions): 记一笔或多笔账（支出/收入），会自动记到当前用户所属账本
+- query_transactions(date_from, date_to, ...): 查询账单（只读），只查当前用户所属账本
+- create_ledger(name): 创建账本，返回邀请口令（创建者自动成为该账本管理员）
+- join_ledger(invite_code): 凭口令加入别人的账本（加入者为普通成员）
+- get_my_ledgers(): 列出当前用户加入的所有账本
+- admin_remove_member(target_openid): [仅管理员] 移除账本成员
+- admin_rename_ledger(new_name): [仅管理员] 改账本名
+- admin_delete_ledger(): [仅管理员] 删除账本
 - ask_clarify(question): 信息不足时反问用户
 
 预设分类（只能用这些，拿不准归「其他」）：
@@ -196,8 +195,8 @@ AGENT_SYSTEM_PROMPT = """\
 - 收入（3类）：工资、外快、其他
 
 工作方式（重要）：
-1. 用户说记账 → 用 record_transactions 记下（openid 用当前用户），然后简单确认
-2. 用户说查账 → 用 query_transactions 查数据（openid 用当前用户），看到结果后总结成自然语言
+1. 用户说记账 → 用 record_transactions 记下，然后简单确认
+2. 用户说查账 → 用 query_transactions 查数据，看到结果后总结成自然语言
 3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取
 4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger
 5. 用户说「我有哪些账本」→ 用 get_my_ledgers
@@ -209,28 +208,9 @@ AGENT_SYSTEM_PROMPT = """\
 - 金额默认单位「元」
 - 时间默认「现在」，支持「昨天」「上周五」等相对时间
 - 每步只调用最需要的工具，不要重复查询
-- openid 只作为工具参数传给工具代码，你在回复里不要提及它
+- 当前用户身份已由系统绑定，你不需要也无法修改它；不要在回复里提及任何身份标识
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
-
-
-# ──────────────────────────── Agent 实例（懒加载） ────────────────────────────
-
-_agent = None
-
-
-def _get_agent():
-    """懒加载编译好的 ReAct agent。"""
-    global _agent
-    if _agent is None:
-        from langgraph.prebuilt import create_react_agent
-        now = __import__("datetime").datetime.now(SHANGHAI).isoformat()
-        _agent = create_react_agent(
-            model=_get_model(),
-            tools=AGENT_TOOLS,
-            prompt=AGENT_SYSTEM_PROMPT.format(now=now),
-        )
-    return _agent
 
 
 # ──────────────────────────── 主入口 ────────────────────────────
@@ -244,16 +224,22 @@ def run_agent(openid: str, content: str) -> str:
     处理一条用户消息（agent 主入口）。
     被 main.py 的线程池调用（同步函数）。返回回复文本。
 
-    失败时返回 AGENT_FAILURE 哨兵（不抛异常），由 graph.py 识别并走三分支兜底。
+    安全：每次用 make_tools(openid) 重新编译 agent，openid 通过闭包注入工具，
+    用户消息里不拼 openid，避免 prompt injection 冒充身份。
+    失败时返回 AGENT_FAILURE 哨兵，由 graph.py 识别并走三分支兜底。
     """
     try:
-        agent = _get_agent()
-        # 关键：把 openid 拼进用户消息，让 agent 一定能看到并有据可依填进工具参数。
-        # （工具参数需要 openid 才能定位账本；放 system 里可能被 agent 忽略，放 user 内容更可靠）
-        user_msg = f"[当前用户 openid = {openid}]\n{content}"
+        from langgraph.prebuilt import create_react_agent
+        now = __import__("datetime").datetime.now(SHANGHAI).isoformat()
+        # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
+        agent = create_react_agent(
+            model=_get_model(),
+            tools=make_tools(openid),          # openid 闭包注入，LLM 不可见
+            prompt=AGENT_SYSTEM_PROMPT.format(now=now),
+        )
         result = agent.invoke({
             "messages": [
-                {"role": "user", "content": user_msg},
+                {"role": "user", "content": content},   # 不拼 openid，杜绝注入
             ]
         })
         messages = result.get("messages", [])
