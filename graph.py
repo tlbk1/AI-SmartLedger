@@ -93,37 +93,14 @@ def _classify_and_route(state: GraphState) -> str:
     intent = llm.classify_intent(content, now)
 
     if intent == "record":
-        result = llm.extract_transactions(content, now)
-        if result.ok and result.txns:
-            # 任务2：记账必须带 ledger_id——先定位用户当前账本，写孤儿数据的旧 insert_many 不再用
-            ledger_id = db.get_user_ledger_id(openid)
-            if ledger_id is None:
-                # 有了默认账本后正常不会发生；防御性提示
-                return "你还没有账本，请先创建一个。"
-            user_id = db.get_or_create_user(openid)
-            txns = [
-                db.Transaction(
-                    type=t.type, amount=t.amount, category=t.category,
-                    note=t.note, happened_at=t.happened_at,
-                )
-                for t in result.txns
-            ]
-            if db.insert_many_for_ledger(ledger_id, user_id, txns):
-                lines = []
-                for t in result.txns:
-                    emoji = "💰" if t.type == "income" else "🧾"
-                    lines.append(f"{emoji} {t.category} {t.type} ¥{t.amount:.0f}")
-                return f"✅ 已记 {len(txns)} 笔：\n" + "\n".join(lines)
-            return "没记上，请重发一次。"
-        elif result.need_amount:
-            db.set_pending(openid, result.draft or {}, result.question)
-            return result.question
-        return "没太明白，能再说一次吗？"
+        # 方案B：兜底路径不写账——写路径收敛为一条(agent 工具的 insert_many_for_ledger)。
+        # Agent 失败时若用户想记账，直接提示重发。避免兜底再写一条 ledger_id=NULL 的无主账。
+        return "没记上，请重发一次。（Agent 暂不可用）"
     elif intent == "query":
         params = llm.extract_query_params(content, now)
         if params is None:
             return "查不到，请换个说法试试。"
-        # 任务2：查账按账本隔离——用 openid 定位当前账本，旧的 query(不过滤账本)不再用
+        # 查账按账本隔离——用 openid 定位当前账本，旧的 query(不过滤账本)不再用
         ledger_id = db.get_user_ledger_id(openid)
         if ledger_id is None:
             return "你还没有账本，请先创建一个。"

@@ -244,8 +244,10 @@ class Transaction:
 
 
 def insert_many(txns: list[Transaction]) -> bool:
-    """
-    整批一个事务写入，全成全不记（需求 14.6）。
+    """【已退役，仅测试引用】整批写入事务，全成全不记。
+    注意：此函数不写 ledger_id，会产出 ledger_id=NULL 的「无主账」，
+    任何账本查询都查不到。生产路径不应调用——记账请用 insert_many_for_ledger。
+    保留仅因 tests/test_wechat_mock.py 还引用；待该测试改用带账本版本后删除。
     返回 True = 成功，False = 失败。
     """
     if not txns:
@@ -276,8 +278,9 @@ def query(
     type_filter: Optional[str] = None,
     limit: int = 20,
 ) -> list[dict]:
-    """
-    参数化只读查询（需求 14.4）。
+    """【已退役，仅测试/tools 引用】参数化只读查询。
+    注意：此函数不过滤 ledger_id，会查到「无主账」(ledger_id=NULL)。
+    生产查账请用 query_by_ledger(按账本隔离)。保留仅因旧代码/测试引用。
     日期参数为 ISO 日期 'YYYY-MM-DD'，此处补全为半开区间。
     """
     # 日期边界补全（审查错误2：BETWEEN 会丢最后一天，改用 >= 和 <）
