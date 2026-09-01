@@ -84,20 +84,23 @@ def _dispatch_fallback(state: GraphState) -> str:
 
 def _classify_and_route(state: GraphState) -> str:
     """简单的分类 + 路由兜底（不引入 LangGraph 复杂编排）。"""
-    from tools import query_transactions as tools_query
     import llm
 
     openid = state["openid"]
     content = state["content"]
     now = state.get("now", "")
 
-    # 先查 pending（保留原有反问合并逻辑）
-    pending = db.get_pending(openid)
     intent = llm.classify_intent(content, now)
 
     if intent == "record":
         result = llm.extract_transactions(content, now)
         if result.ok and result.txns:
+            # 任务2：记账必须带 ledger_id——先定位用户当前账本，写孤儿数据的旧 insert_many 不再用
+            ledger_id = db.get_user_ledger_id(openid)
+            if ledger_id is None:
+                # 有了默认账本后正常不会发生；防御性提示
+                return "你还没有账本，请先创建一个。"
+            user_id = db.get_or_create_user(openid)
             txns = [
                 db.Transaction(
                     type=t.type, amount=t.amount, category=t.category,
@@ -105,7 +108,7 @@ def _classify_and_route(state: GraphState) -> str:
                 )
                 for t in result.txns
             ]
-            if db.insert_many(txns):
+            if db.insert_many_for_ledger(ledger_id, user_id, txns):
                 lines = []
                 for t in result.txns:
                     emoji = "💰" if t.type == "income" else "🧾"
@@ -120,7 +123,18 @@ def _classify_and_route(state: GraphState) -> str:
         params = llm.extract_query_params(content, now)
         if params is None:
             return "查不到，请换个说法试试。"
-        rows = tools_query(params)
+        # 任务2：查账按账本隔离——用 openid 定位当前账本，旧的 query(不过滤账本)不再用
+        ledger_id = db.get_user_ledger_id(openid)
+        if ledger_id is None:
+            return "你还没有账本，请先创建一个。"
+        rows = db.query_by_ledger(
+            ledger_id=ledger_id,
+            date_from=params.date_from,
+            date_to=params.date_to,
+            category=params.category,
+            type_filter=params.type_filter,
+            limit=params.limit,
+        )
         return llm.summarize_query_result(rows, content, now)
     else:
         return llm.chat_reply(content, now)

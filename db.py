@@ -179,6 +179,9 @@ def init():
             )
         """)
 
+        # 软删除：ledgers.deleted_at（任务2，幂等补列）；NULL = 未删除
+        _add_column_if_missing(conn, "ledgers", "deleted_at", "TEXT")
+
 
 def _add_column_if_missing(conn, table: str, column: str, col_type: str):
     """若表里还没有某列，则添加（幂等，兼容旧库）。"""
@@ -294,7 +297,11 @@ def _gen_invite_code(conn) -> str:
 
 
 def get_or_create_user(openid: str, nickname: str = "") -> int:
-    """根据 openid 找到用户，没有则创建。返回 user_id。"""
+    """根据 openid 找到用户，没有则创建。返回 user_id。
+
+    任务2：新用户创建时自动建一个默认账本「我的账本」（该用户 role=owner），
+    保证任何用户任何时刻至少有一个账本——记账/查账永远不会落到空账本。
+    """
     with _connect() as conn:
         row = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
         if row:
@@ -304,19 +311,32 @@ def get_or_create_user(openid: str, nickname: str = "") -> int:
             "INSERT INTO users (openid, nickname, created_at) VALUES (?, ?, ?)",
             (openid, nickname, now),
         )
+        user_id = cur.lastrowid
+        # 自动创建默认账本「我的账本」，用户是 owner，且设为当前账本
+        invite = _gen_invite_code(conn)
+        ledger_cur = conn.execute(
+            "INSERT INTO ledgers (name, owner_user_id, invite_code, created_at) VALUES (?, ?, ?, ?)",
+            ("我的账本", user_id, invite, now),
+        )
+        ledger_id = ledger_cur.lastrowid
+        conn.execute(
+            "INSERT INTO ledger_members (ledger_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
+            (ledger_id, user_id, now),
+        )
         conn.commit()
-        return cur.lastrowid
+        return user_id
 
 
 def get_user_ledger_id(openid: str) -> Optional[int]:
-    """根据 openid 找用户最近加入的账本 id（多账本时归最近加入的）。
-    找不到返回 None。"""
+    """根据 openid 找用户当前账本 id（多账本时默认最近加入的）。
+    只返回未软删除的账本；找不到返回 None。"""
     with _connect() as conn:
         row = conn.execute("""
             SELECT lm.ledger_id
             FROM ledger_members lm
             JOIN users u ON u.id = lm.user_id
-            WHERE u.openid = ?
+            JOIN ledgers l ON l.id = lm.ledger_id
+            WHERE u.openid = ? AND l.deleted_at IS NULL
             ORDER BY lm.id DESC
             LIMIT 1
         """, (openid,)).fetchone()
@@ -370,14 +390,14 @@ def join_ledger(openid: str, invite_code: str) -> tuple[bool, str]:
 
 
 def get_my_ledgers(openid: str) -> list[dict]:
-    """列出用户加入的所有账本。"""
+    """列出用户加入的所有账本（不含已软删除的）。"""
     user_id = get_or_create_user(openid)
     with _connect() as conn:
         rows = conn.execute("""
-            SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at
+            SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at, l.deleted_at
             FROM ledger_members lm
             JOIN ledgers l ON l.id = lm.ledger_id
-            WHERE lm.user_id = ?
+            WHERE lm.user_id = ? AND l.deleted_at IS NULL
             ORDER BY lm.id DESC
         """, (user_id,)).fetchall()
         return [dict(r) for r in rows]
@@ -387,9 +407,14 @@ def get_my_ledgers(openid: str) -> list[dict]:
 # 保留旧 insert_many / query 签名供原有测试用；新增带 ledger 的版本供 agent 用。
 
 def insert_many_for_ledger(ledger_id: int, created_by_user_id: int, txns: list[Transaction]) -> bool:
-    """整批写入事务，每笔带上 ledger_id + created_by_user_id。"""
+    """整批写入事务，每笔带上 ledger_id + created_by_user_id。
+    防御（任务2）：ledger_id 不允许 NULL——避免写入查不到的孤儿数据。"""
     if not txns:
         return True
+    if ledger_id is None:
+        import logging
+        logging.getLogger(__name__).error("insert_many_for_ledger 拒绝: ledger_id 为 None")
+        return False
     conn = _connect()
     try:
         with conn:
@@ -444,34 +469,13 @@ def query_by_ledger(
 
 
 def migrate_old_data(openid: str, ledger_name: str = "我的账本") -> Optional[int]:
-    """迁移旧数据（ledger_id 为 NULL 的记录）归到该 openid 名下的专属账本。
-    返回记账本 id（若没有旧数据则只会创建一个空账本；成功返回 id）。"""
-    with _connect() as conn:
-        null_count = conn.execute(
-            "SELECT COUNT(*) FROM transactions WHERE ledger_id IS NULL"
-        ).fetchone()[0]
-        if null_count == 0:
-            return None
-
-        user_id = get_or_create_user(openid)
-        invite = _gen_invite_code(conn)
-        now = datetime.now(SHANGHAI).isoformat()
-        cur = conn.execute(
-            "INSERT INTO ledgers (name, owner_user_id, invite_code, created_at) VALUES (?, ?, ?, ?)",
-            (ledger_name, user_id, invite, now),
-        )
-        ledger_id = cur.lastrowid
-        conn.execute(
-            "INSERT INTO ledger_members (ledger_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)",
-            (ledger_id, user_id, now),
-        )
-        # 把无语本归属的旧数据归入这个专属账本 + 标记 created_by_user_id
-        conn.execute(
-            "UPDATE transactions SET ledger_id = ?, created_by_user_id = ? WHERE ledger_id IS NULL",
-            (ledger_id, user_id),
-        )
-        conn.commit()
-        return ledger_id
+    """【已退役】不再使用。之前会把所有 ledger_id 为 NULL 的记录整批归给触发者，
+    多用户下会张冠李戴。存量 NULL 记录请用一次性迁移脚本处理，不应走此函数。
+    （保留签名避免 import 报错，但不再执行归并逻辑。）"""
+    import warnings, logging
+    warnings.warn("migrate_old_data 已退役：会把 NULL 记录张冠李戴，勿再调用。", DeprecationWarning, stacklevel=2)
+    logging.getLogger(__name__).warning("migrate_old_data 被调用但已退役，不做任何归并")
+    return None
 
 
 # ════════════════════════ 账本内分权（owner = 管理 / member = 普通） ════════════════════════
@@ -538,16 +542,15 @@ def admin_rename_ledger(openid: str, new_name: str) -> tuple[bool, str]:
 
 
 def admin_delete_ledger(openid: str) -> tuple[bool, str]:
-    """owner 删除账本（连同成员关系；不删账目数据，只移除归属）。返回 (成功?, 消息)。"""
+    """owner 软删除账本。只打 deleted_at 时间戳，不删成员关系、不把账目 ledger_id 置 NULL。
+    账目仍可追溯（ledgerg 行保留，只是被标记删除）。返回 (成功?, 消息)。"""
     ledger_id = get_user_ledger_id(openid)
     if ledger_id is None:
         return False, "你没有加入任何账本"
     if not is_ledger_admin(openid):
         return False, "只有管理员才能删除账本"
     with _connect() as conn:
-        # 移除成员关系 + 账本本身；账目保留但 ledger_id 置空（避免数据丢失）
-        conn.execute("DELETE FROM ledger_members WHERE ledger_id=?", (ledger_id,))
-        conn.execute("DELETE FROM ledgers WHERE id=?", (ledger_id,))
-        conn.execute("UPDATE transactions SET ledger_id=NULL, created_by_user_id=NULL WHERE ledger_id=?", (ledger_id,))
+        now = datetime.now(SHANGHAI).isoformat()
+        conn.execute("UPDATE ledgers SET deleted_at=? WHERE id=?", (now, ledger_id))
         conn.commit()
-        return True, "账本已删除"
+        return True, "账本已删除（软删除，账目保留可追溯）"
