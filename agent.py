@@ -160,15 +160,18 @@ def make_tools(openid: str) -> list:
         lines = []
         for m in members:
             label = "管理员" if m["role"] == "owner" else "成员"
-            name = m["nickname"] or m["openid"][:8]
+            # 只显示 nickname（默认或自设），绝不显示 openid（T008 / constitution 原则 I）
+            name = m["nickname"] or "未命名"
             lines.append(f"- {name}（{label}）")
         return "账本成员：\n" + "\n".join(lines)
 
     @tool
     def set_nickname(nickname: str) -> str:
-        """设置当前用户的昵称，账本成员会用它来展示和识别。nickname 是用户昵称。"""
-        db.set_nickname(openid, nickname)
-        return f"✅ 已把你的昵称设为「{nickname}」"
+        """设置当前用户的昵称，账本成员会用它来展示和识别。nickname 是用户昵称（非空白才生效）。"""
+        ok = db.set_nickname(openid, nickname)
+        if not ok:
+            return "昵称不能为空，请重新设置（比如「小王」）。"
+        return f"✅ 已把你的昵称设为「{nickname.strip()}」"
 
     @tool
     def admin_remove_member(target_nickname: str) -> str:

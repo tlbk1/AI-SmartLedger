@@ -83,6 +83,15 @@ def query_transactions(openid: str, date_from, date_to, ...) -> str:
 - **工具参数带 openid**（主，可靠）：每个账本/记账/查账工具都接收 openid，执行代码真正能定位用户。
 - **注入提示词**（辅，让 agent 更自然）：在 system prompt 里提"当前用户 openid = {openid}"，但**不依赖它做隔离**。
 
+> ⚠️ **安全进化（任务1）**：openid 已从 LLM 收回——改为**工具工厂闭包注入**（`make_tools(openid)`），LLM 的工具 schema 里**不出现 openid**，杜绝身份冒充。此文档的"工具带 openid"是早期表述，当前实现是闭包注入（更安全）。
+
+### nickname（成员昵称）约定
+
+- **默认昵称**：用户未设置时，系统自动生成「账本成员 + 4位随机 hex」（如"账本成员 a3f9"）并**落库**到 `users.nickname`，用户级一个（各账本相同）。
+- **绝不显示 openid**：任何展示成员处（成员列表/按昵称移除）只用 nickname（默认或自设），`list_ledger_members` 的 SELECT 不返回 openid——从源头杜绝身份泄露。
+- **自设替换**：`set_nickname` 覆盖默认昵称，立即生效；空/空白昵称不生效。
+- **账本内唯一**：默认昵称生成时校验账本内冲突，冲突重生成。
+
 ---
 
 ## 四、交互流程（口令制）
