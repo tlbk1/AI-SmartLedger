@@ -625,29 +625,106 @@ def admin_remove_member(openid: str, target_nickname: str) -> tuple[bool, str]:
         return True, f"已移除成员 {target_nickname}"
 
 
-def set_nickname(openid: str, nickname: str) -> bool:
-    """任务5：设置/更新用户昵称。"""
+def _gen_default_nickname(conn, user_id: int, excluded_nickname: str = "") -> str:
+    """生成唯一默认昵称「账本成员 + 4位随机hex」。
+
+    T002: 只要目标昵称在当前用户所有账本内不与任何成员 nickname 冲突即可。
+    风格与 _gen_invite_code 一致（secrets 随机 + 防碰撞循环）。
+    """
+    import secrets
+    for _ in range(50):
+        nick = "账本成员 " + secrets.token_hex(2)  # 4 位 hex（token_hex(2)=4字符）
+        if excluded_nickname and nick == excluded_nickname:
+            continue
+        # 账本内唯一校验：查这个用户所在的任意账本，是否已有成员用了该昵称
+        dup = conn.execute(
+            """
+            SELECT 1 FROM ledger_members lm
+            JOIN users u ON u.id = lm.user_id
+            JOIN ledgers l ON l.id = lm.ledger_id
+            WHERE l.deleted_at IS NULL AND lm.user_id != ? AND u.nickname = ?
+            LIMIT 1
+            """,
+            (user_id, nick),
+        ).fetchone()
+        if dup is None:
+            return nick
+    raise RuntimeError("无法生成唯一默认昵称")
+
+
+def _ensure_nickname(openid: str) -> str:
+    """T003: 保证用户 nickname 非空——为空/空白时生成默认昵称并落库。
+
+    返回最终昵称（可能被落库的默认昵称）。遵循 constitution III（默认昵称用户级一个、永不为空）。
+    """
     user_id = get_or_create_user(openid)
     with _connect() as conn:
-        conn.execute("UPDATE users SET nickname=? WHERE id=?", (nickname, user_id))
+        row = conn.execute("SELECT nickname FROM users WHERE id=?", (user_id,)).fetchone()
+        cur_nick = (row["nickname"] if row else "") or ""
+        if cur_nick.strip():  # 已有非空昵称
+            return cur_nick
+        # 为空 → 生成默认昵称并落库
+        nick = _gen_default_nickname(conn, user_id)
+        conn.execute("UPDATE users SET nickname=? WHERE id=?", (nick, user_id))
+        conn.commit()
+        return nick
+
+
+def set_nickname(openid: str, nickname: str) -> bool:
+    """T005: 设置/更新用户昵称。空白/空昵称不生效（保留现有昵称）。"""
+    if not nickname or not nickname.strip():
+        return False
+    user_id = get_or_create_user(openid)
+    with _connect() as conn:
+        conn.execute("UPDATE users SET nickname=? WHERE id=?", (nickname.strip(), user_id))
         conn.commit()
         return True
 
 
 def list_ledger_members(openid: str) -> list[dict]:
-    """任务5：列出当前账本的成员（昵称 + 角色）。"""
+    """T004/T009: 列出当前账本的成员，只含代表身份的信息，绝不返回 openid。
+
+    - SELECT 不再取 openid（从源头杜绝泄露，constitution 原则 I）
+    - 返回前对每个成员调用 _ensure_nickname，保证 nickname 非空（默认或自设）
+    """
     ledger_id = get_user_ledger_id(openid)
     if ledger_id is None:
         return []
     with _connect() as conn:
         rows = conn.execute("""
-            SELECT u.nickname, u.openid, lm.role
+            SELECT u.id, u.nickname, lm.role
             FROM ledger_members lm
             JOIN users u ON u.id = lm.user_id
             WHERE lm.ledger_id = ?
             ORDER BY (lm.role='owner') DESC, lm.id
         """, (ledger_id,)).fetchall()
-        return [dict(r) for r in rows]
+        members = []
+        for r in rows:
+            nick = r["nickname"]
+            if not nick or not nick.strip():
+                # 空昵称 → 生成默认昵称并落库（_ensure_nickname 负责）
+                # 这里在函数外单独落库，避免在 with conn 里再开连接
+                nick = None
+            members.append({"user_id": r["id"], "nickname": nick, "role": r["role"]})
+        conn.commit()
+    # 对空昵称成员在外面落默认昵称，并回填
+    for m in members:
+        if not m["nickname"] or not m["nickname"].strip():
+            m["nickname"] = _ensure_nickname_by_id(m["user_id"])
+    return members
+
+
+def _ensure_nickname_by_id(user_id: int) -> str:
+    """按 user_id 保证昵称非空并落库（供 list_ledger_members 内部用）。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT nickname FROM users WHERE id=?", (user_id,)).fetchone()
+        cur = (row["nickname"] if row else "") or ""
+        if cur.strip():
+            return cur
+        nick = _gen_default_nickname(conn, user_id)
+        conn.execute("UPDATE users SET nickname=? WHERE id=?", (nick, user_id))
+        conn.commit()
+        return nick
 
 
 def admin_rename_ledger(openid: str, new_name: str) -> tuple[bool, str]:

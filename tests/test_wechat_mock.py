@@ -258,3 +258,73 @@ class TestUndelivered:
         # drain 后应该空了
         again = db.drain_undelivered(TEST_OPENID)
         assert again == []
+
+
+# ──────────────────────────── default-nickname 测试 ────────────────────────────
+
+import tempfile
+import pathlib
+
+
+@pytest.fixture
+def isolated_db(monkeypatch):
+    """每个测试用临时 DB，避免污染真实 ledger.db。"""
+    tmp = tempfile.mkdtemp()
+    monkeypatch.setattr(db, "DB_PATH", pathlib.Path(tmp) / "t.db")
+    db.init()
+    yield
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestDefaultNickname:
+
+    def test_default_nickname_generated(self, isolated_db):
+        """US1 P1: 未设昵称的用户，成员列表显示默认昵称(账本成员+后缀)。"""
+        db.get_or_create_user("o_user_a")
+        ok, inv = db.create_ledger("o_user_a", "我们家")
+        members = db.list_ledger_members("o_user_a")
+        assert members, "应该有成员"
+        nick = members[0]["nickname"]
+        assert nick and nick.startswith("账本成员 "), f"昵称应以'账本成员 '开头, 实际={nick!r}"
+        assert len(nick) > 4
+
+    def test_no_openid_in_member_list(self, isolated_db):
+        """US3 P1: 成员列表不返回 openid。"""
+        db.get_or_create_user("o_user_a")
+        ok, inv = db.create_ledger("o_user_a", "我们家")
+        members = db.list_ledger_members("o_user_a")
+        assert members
+        assert "openid" not in members[0], "成员 dict 不应含 openid"
+        assert all("openid" not in m for m in members)
+
+    def test_same_user_same_default_nickname_across_ledgers(self, isolated_db):
+        """US1 P1: 同一用户各账本同一默认昵称(用户级一个)。"""
+        db.get_or_create_user("o_user_a")
+        db.create_ledger("o_user_a", "我们家")
+        db.create_ledger("o_user_a", "旅行账")
+        m1 = db.list_ledger_members("o_user_a")
+        # 切到另一个账本看昵称
+        db.switch_ledger("o_user_a", "旅行账")
+        m2 = db.list_ledger_members("o_user_a")
+        assert m1[0]["nickname"] == m2[0]["nickname"], "同一用户默认昵称应相同"
+
+    def test_set_nickname_replaces_default(self, isolated_db):
+        """US2 P2: 自设昵称替换默认。"""
+        db.get_or_create_user("o_user_a")
+        db.create_ledger("o_user_a", "我们家")
+        db.set_nickname("o_user_a", "小王")
+        members = db.list_ledger_members("o_user_a")
+        assert members[0]["nickname"] == "小王"
+
+    def test_blank_nickname_ignored(self, isolated_db):
+        """US2 P2: 空/空白昵称不生效,保留现有昵称。"""
+        db.get_or_create_user("o_user_a")
+        db.create_ledger("o_user_a", "我们家")
+        db.set_nickname("o_user_a", "小王")
+        before = db.list_ledger_members("o_user_a")[0]["nickname"]
+        ok = db.set_nickname("o_user_a", "   ")
+        assert ok is False, "空昵称应返回 False"
+        after = db.list_ledger_members("o_user_a")[0]["nickname"]
+        assert after == before == "小王", "空昵称后应保留'小王'"
+
