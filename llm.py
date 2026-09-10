@@ -307,11 +307,26 @@ def extract_query_params(content: str, now_str: str) -> Optional[QueryParams]:
 
 # ──────────────────────────── ④ 查询结果总结 ────────────────────────────
 
-def summarize_query_result(rows: list[dict], original_question: str, now_str: str) -> str:
+def summarize_query_result(
+    rows: list[dict],
+    original_question: str,
+    now_str: str,
+    ledger_deleted: bool = False,
+) -> str:
     """
     把 SQL 查询结果 + 用户原问题喂给 LLM，总结成自然语言。
+
+    T050（FR-014）：ledger_deleted=True 时，明确提示"该账本已被删除（历史只读）"。
     """
+    # T050：已删账本的提示语（两种分支都要带）
+    deleted_note = (
+        "\n【重要】该账本**已被删除**，以下是历史账目（只读，不能再记账）。"
+        "请在回复开头或结尾明确提示用户「该账本已被删除」。"
+    ) if ledger_deleted else ""
+
     if not rows:
+        if ledger_deleted:
+            return "该账本已被删除，且没有查到相关历史记录。"
         return "没有查到相关记录。"
 
     client = _get_client()
@@ -328,6 +343,7 @@ def summarize_query_result(rows: list[dict], original_question: str, now_str: st
         "这是【共享账本】，明细里每条可能带 created_by_nickname（记账人昵称）："
         "如果用户问「谁记的/谁花的」，或不同记录是不同人记的，请在总结里点出记账人；"
         "否则不必逐条标注。"
+        f"{deleted_note}"
     )
 
     try:

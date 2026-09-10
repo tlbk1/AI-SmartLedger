@@ -361,3 +361,194 @@ def test_member_cannot_admin_other_ledger(iso):
     ok, msg = db.admin_remove_member(b, "老板")
     assert not ok
     assert "管理员" in msg
+
+
+# ════════ e2e 回归：昵称即时生成 + 移除后回落（隔离泄漏）════════
+
+def test_new_user_gets_default_nickname_immediately(iso):
+    """e2e V1 回归：新用户创建时昵称非空（owner 能按名审批，constitution III）。"""
+    uid = db.get_or_create_user("o_fresh")
+    import sqlite3
+    c = sqlite3.connect(str(db.DB_PATH))
+    nick = c.execute("SELECT nickname FROM users WHERE id=?", (uid,)).fetchone()[0]
+    c.close()
+    assert (nick or "").startswith("账本成员"), f"创建时应即时生成默认昵称，实际='{nick}'"
+
+
+def test_removed_member_current_ledger_falls_back(iso):
+    """e2e V10 回归：被移除者的 current_ledger_id 应回落默认账本（堵隔离泄漏：
+    否则被移除者仍能以原账本为当前账本查账）。"""
+    owner, b, lid = _ledger_with_member_and_txn()
+    db.switch_ledger(b, "我们家")
+    assert db.get_user_ledger_id(b) == lid
+    ok, msg = db.admin_remove_member(owner, "小王")
+    assert ok, msg
+    assert db.get_user_ledger_id(b) != lid, "被移除者当前账本不应再指向原账本"
+    assert db.get_user_ledger_id(b) is not None
+
+
+# ════════ T049: owner 对话时自动提示待审批（兜底保底）════════
+
+def test_pending_hint_empty_for_non_owner(iso):
+    """T049（US2/AC4）：非 owner 不产生提示（不能向申请人泄露申请动态）。"""
+    _setup_owner_with_ledger()
+    db.apply_join("o_applicant", db.get_my_ledgers("o_owner") and _code_of("我们家"))
+    import agent
+    assert agent._pending_joins_hint("o_applicant") == ""
+    assert agent._pending_joins_hint("o_unknown_never_joined") == ""
+
+
+def test_pending_hint_for_owner_with_pending(iso):
+    """T049（US2/AC4）：owner 有待审批 → 提示含条数与申请人昵称。"""
+    owner, code, lid = _setup_owner_with_ledger()
+    db.set_nickname("o_applicant", "小王")
+    db.apply_join("o_applicant", code)
+    import agent
+    hint = agent._pending_joins_hint(owner)
+    assert "待审批" in hint and "1" in hint and "小王" in hint
+
+
+def test_pending_hint_empty_when_no_pending(iso):
+    """T049：owner 无待审批 → 不注入提示（不给 LLM 噪音）。"""
+    owner, code, lid = _setup_owner_with_ledger()
+    import agent
+    assert agent._pending_joins_hint(owner) == ""
+
+
+# ════════ T050: 已删除账本（历史只读 + 明确提示）════════
+
+def _code_of(ledger_name: str, owner_openid: str = "o_owner") -> str:
+    """取某账本的口令（测试辅助）。"""
+    for l in db.get_my_ledgers(owner_openid):
+        if l["name"] == ledger_name:
+            return l["invite_code"]
+    raise AssertionError(f"没找到账本 {ledger_name}")
+
+
+def _deleted_ledger_with_history():
+    """建「临时账」→ B 加入并记一笔 → owner 删账本。返回 (owner, b, lid, 默认账本id)。"""
+    owner, code, lid = _setup_owner_with_ledger()
+    # B 有自己的默认账本（作为回落目标），先记下来
+    db.get_or_create_user("o_b")
+    lid_b_default = db.get_user_ledger_id("o_b")
+    db.set_nickname("o_b", "小王")
+    db.apply_join("o_b", code)
+    db.approve_join(owner, "小王")
+    db.switch_ledger("o_b", "我们家")
+    uid_b = db.get_or_create_user("o_b")
+    db.insert_many_for_ledger(lid, uid_b, [
+        db.Transaction(type="expense", amount=50.0, category="餐饮",
+                       happened_at="2026-09-05T12:00:00+08:00", note="B记的"),
+    ])
+    ok, msg = db.admin_delete_ledger(owner, lid)
+    assert ok, msg
+    return owner, "o_b", lid, lid_b_default
+
+
+def test_deleted_ledger_visible_in_list_and_switchable(iso):
+    """T050（FR-014/US10-AC2）：已删账本仍在"我的账本"里（带标记），且可切进去看历史。"""
+    owner, b, lid, lid_b_default = _deleted_ledger_with_history()
+    # ① 删除后回落默认账本
+    assert db.get_user_ledger_id(b) == lid_b_default
+    # ② 列表里仍在，且标记 is_deleted
+    mine = {l["name"]: l for l in db.get_my_ledgers(b)}
+    assert "我们家" in mine, "已删账本应保留在列表（否则历史看不了）"
+    assert mine["我们家"]["is_deleted"] is True
+    # ③ 可以切进去（只读），并明确提示已删除
+    ok, msg = db.switch_ledger(b, "我们家")
+    assert ok, msg
+    assert "已被删除" in msg
+    assert db.get_user_ledger_id(b) == lid
+    # ④ 历史账目仍查得到
+    rows = db.query_by_ledger(lid, "2026-09-01", "2026-09-30")
+    assert len(rows) == 1 and rows[0]["amount"] == 50.0
+    assert db.is_ledger_deleted(lid) is True
+
+
+def test_deleted_ledger_rejects_writes(iso):
+    """T050（FR-014）：已删账本只读——db 层拒绝写入。"""
+    owner, b, lid, _ = _deleted_ledger_with_history()
+    ok = db.insert_many_for_ledger(lid, db.get_or_create_user(b), [
+        db.Transaction(type="expense", amount=1.0, category="其他",
+                       happened_at="2026-09-06T12:00:00+08:00", note="不应写入"),
+    ])
+    assert ok is False, "已删除账本不应接受新账目"
+    assert len(db.query_by_ledger(lid, "2026-09-01", "2026-09-30")) == 1, "账目数不应变化"
+
+
+def test_agent_tool_refuses_record_into_deleted_ledger(iso):
+    """T050：agent 工具层给出友好拒绝（不是静默失败）。"""
+    owner, b, lid, _ = _deleted_ledger_with_history()
+    db.switch_ledger(b, "我们家")          # 当前账本 = 已删账本
+    import agent
+    tools = {t.name: t for t in agent.make_tools(b)}
+    out = tools["record_transactions"].invoke(
+        {"transactions": [{"type": "expense", "amount": 1.0, "category": "其他"}]}
+    )
+    assert "已被删除" in out and "不能记账" in out
+
+
+def test_agent_query_tool_marks_deleted_ledger(iso):
+    """T050（US10-AC2）：查已删账本时，工具返回带 ledger_deleted 标记 + 提示语。"""
+    owner, b, lid, _ = _deleted_ledger_with_history()
+    db.switch_ledger(b, "我们家")
+    import agent, json
+    tools = {t.name: t for t in agent.make_tools(b)}
+    out = tools["query_transactions"].invoke(
+        {"date_from": "2026-09-01", "date_to": "2026-09-30"}
+    )
+    data = json.loads(out)
+    assert data["ledger_deleted"] is True
+    assert "已被删除" in data["notice"]
+    assert len(data["records"]) == 1
+
+
+def test_summarize_deleted_empty_is_deterministic(iso):
+    """T050：已删账本 + 无记录 → 确定性文案（不调 LLM）。"""
+    import llm
+    out = llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00",
+                                     ledger_deleted=True)
+    assert "已被删除" in out
+    # 普通空结果保持原样
+    assert llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00") == "没有查到相关记录。"
+
+
+# ════════ T032/T033: US7 管理操作须明确指定账本 ════════
+# 说明：US7 的"要不要先问用户"是 LLM 行为，由 prompt 规则驱动；测试从两处断言：
+#   ① prompt 里确实有该规则（单账本免确认 / 多账本须指定）
+#   ② 就算 LLM 选错账本，db 层按【目标账本】判权限也会拦住（纵深防御）
+
+def test_single_ledger_no_confirm_rule_present(iso):
+    """T032（US7/AC3 + D8）：单账本时直接执行——prompt 有该规则，且单账本下管理操作可用。"""
+    import agent
+    assert "只有一个账本时直接执行" in agent.AGENT_SYSTEM_PROMPT
+    owner, code, lid = _setup_owner_with_ledger()
+    # 只有一个账本 → 显式指定它就是它，操作成功（无需二次确认）
+    assert db.is_ledger_admin(owner, lid) is True
+    ok, msg = db.admin_rename_ledger(owner, "咱家", lid)
+    assert ok, msg
+
+
+def test_multi_ledger_requires_target(iso):
+    """T033（US7/AC1+AC2 + FR-004）：多账本须指定；指错账本会被 db 层拒绝。"""
+    import agent
+    # ① prompt 规则存在
+    assert "先问" in agent.AGENT_SYSTEM_PROMPT and "哪个账本" in agent.AGENT_SYSTEM_PROMPT
+    # ② 用户有 A、B 两个账本
+    db.get_or_create_user("o_multi")
+    db.create_ledger("o_multi", "账本A")
+    lid_a = db.get_user_ledger_id("o_multi")
+    ok, _ = db.create_ledger("o_multi", "账本B")
+    lid_b = db.get_user_ledger_id("o_multi")
+    assert lid_a != lid_b
+    # 对 A 改名 → 只有 A 变，B 不受影响（明确作用于目标账本）
+    ok, msg = db.admin_rename_ledger("o_multi", "A改名", lid_a)
+    assert ok, msg
+    names = {l["id"]: l["name"] for l in db.get_my_ledgers("o_multi")}
+    assert names[lid_a] == "A改名" and names[lid_b] == "账本B"
+    # ③ 别人的账本：X 是 L1 owner，但对 L2 无管理权（按目标账本判角色）
+    db.get_or_create_user("o_stranger")
+    ok2, other_lid = db.create_ledger("o_stranger", "外人的账本")
+    assert db.is_ledger_admin("o_multi", other_lid) is False
+    ok3, msg3 = db.admin_delete_ledger("o_multi", other_lid)
+    assert not ok3, "对非自己 owner 的账本应拒绝管理操作"

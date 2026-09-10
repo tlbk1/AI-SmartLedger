@@ -341,6 +341,11 @@ def get_or_create_user(openid: str, nickname: str = "") -> int:
             (openid, nickname, now),
         )
         user_id = cur.lastrowid
+        # constitution III：昵称永不为空——创建时即时生成默认昵称，
+        # 否则 owner 看待审批列表/账目时该用户显示空名（e2e V1 发现的真 bug）
+        if not (nickname or "").strip():
+            nick = _gen_default_nickname(conn, user_id)
+            conn.execute("UPDATE users SET nickname=? WHERE id=?", (nick, user_id))
         # 自动创建默认账本「我的账本」，用户是 owner，且设为当前账本
         invite = _gen_invite_code(conn)
         ledger_cur = conn.execute(
@@ -359,7 +364,11 @@ def get_or_create_user(openid: str, nickname: str = "") -> int:
 
 def get_user_ledger_id(openid: str) -> Optional[int]:
     """根据 openid 找用户「当前账本」id（任务3：读 users.current_ledger_id）。
-    只返回未软删除的账本；找不到返回 None。"""
+
+    T050/FR-014：**尊重用户的显式选择**——即使用户当前账本已被软删除也照原样返回
+    （让他能查看历史账目，只读；写入在 insert/工具层拒绝）。
+    仅当用户没有当前账本时，才兜底回退到最近加入的**未删除**账本。
+    """
     with _connect() as conn:
         row = conn.execute("""
             SELECT u.current_ledger_id
@@ -367,11 +376,11 @@ def get_user_ledger_id(openid: str) -> Optional[int]:
             WHERE u.openid = ?
         """, (openid,)).fetchone()
         if row and row["current_ledger_id"] is not None:
-            # 校验账本未被软删除
-            l = conn.execute("SELECT 1 FROM ledgers WHERE id=? AND deleted_at IS NULL", (row["current_ledger_id"],)).fetchone()
+            # 账本存在即返回（含已软删除——用户显式切进去是为了看历史，只读）
+            l = conn.execute("SELECT 1 FROM ledgers WHERE id=?", (row["current_ledger_id"],)).fetchone()
             if l:
                 return row["current_ledger_id"]
-        # 兜底：回退到最近加入的未软删除账本
+        # 兜底：回退到最近加入的未软删除账本（不自动落进已删账本）
         fallback = conn.execute("""
             SELECT lm.ledger_id
             FROM ledger_members lm
@@ -435,33 +444,71 @@ def join_ledger(openid: str, invite_code: str) -> tuple[bool, str]:
 
 
 def get_my_ledgers(openid: str) -> list[dict]:
-    """列出用户加入的所有账本（不含已软删除的）。"""
+    """列出用户加入的所有账本。
+
+    US10/T050（FR-014）：**包含已软删除的账本**（带 `is_deleted` 标记）——
+    原成员仍能查看其历史账目，前提是能发现它还在。
+    """
     user_id = get_or_create_user(openid)
     with _connect() as conn:
         rows = conn.execute("""
             SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at, l.deleted_at
             FROM ledger_members lm
             JOIN ledgers l ON l.id = lm.ledger_id
-            WHERE lm.user_id = ? AND l.deleted_at IS NULL
+            WHERE lm.user_id = ?
             ORDER BY lm.id DESC
         """, (user_id,)).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["is_deleted"] = bool(d.get("deleted_at"))
+            out.append(d)
+        return out
+
+
+def get_ledger_info(ledger_id: int) -> Optional[dict]:
+    """T050：取账本信息（含已软删除的）。返回 {id, name, is_deleted} 或 None。
+
+    与 get_user_ledger_id 不同：**不过滤 deleted_at**，供"查已删账本历史"路径判断是否要附提示。
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, deleted_at FROM ledgers WHERE id=?", (ledger_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row["id"], "name": row["name"], "is_deleted": bool(row["deleted_at"])}
+
+
+def is_ledger_deleted(ledger_id: Optional[int]) -> bool:
+    """T050：账本是否已被软删除（不存在也算 True——不存在的账本不可用）。"""
+    if ledger_id is None:
+        return True
+    info = get_ledger_info(ledger_id)
+    return True if info is None else info["is_deleted"]
 
 
 def switch_ledger(openid: str, ledger_name: str) -> tuple[bool, str]:
-    """任务3：把用户的当前账本切换到指定的账本（按名查找，必须是用户加入的）。"""
+    """任务3：切换当前账本（按名查找，必须是用户加入的）。
+
+    US10/T050：允许切到**已删除**的账本（仅查看历史，只读），但明确提示已被删除。
+    """
     user_id = get_or_create_user(openid)
     with _connect() as conn:
         row = conn.execute("""
-            SELECT l.id, l.name FROM ledger_members lm
+            SELECT l.id, l.name, l.deleted_at FROM ledger_members lm
             JOIN ledgers l ON l.id = lm.ledger_id
-            WHERE lm.user_id = ? AND l.deleted_at IS NULL AND l.name = ?
+            WHERE lm.user_id = ? AND l.name = ?
             ORDER BY lm.id DESC LIMIT 1
         """, (user_id, ledger_name)).fetchone()
         if row is None:
             return False, f"你还没有加入叫「{ledger_name}」的账本"
         conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (row["id"], user_id))
         conn.commit()
+        if row["deleted_at"]:
+            return True, (
+                f"已切到账本「{row['name']}」——**该账本已被删除**，只能查看历史账目（只读），不能再记账。"
+            )
         return True, f"已切换到账本「{row['name']}」，后续记账/查账都在这个账本"
 
 
@@ -480,12 +527,20 @@ def get_current_ledger_name(openid: str) -> str:
 
 def insert_many_for_ledger(ledger_id: int, created_by_user_id: int, txns: list[Transaction]) -> bool:
     """整批写入事务，每笔带上 ledger_id + created_by_user_id。
-    防御（任务2）：ledger_id 不允许 NULL——避免写入查不到的孤儿数据。"""
+    防御（任务2）：ledger_id 不允许 NULL——避免写入查不到的孤儿数据。
+    防御（T050/FR-014）：**已软删除的账本只读**，拒绝写入。"""
     if not txns:
         return True
     if ledger_id is None:
         import logging
         logging.getLogger(__name__).error("insert_many_for_ledger 拒绝: ledger_id 为 None")
+        return False
+    # T050：已删除账本只读（db 层纵深防御，不只靠 agent 层拦截）
+    if is_ledger_deleted(ledger_id):
+        import logging
+        logging.getLogger(__name__).warning(
+            "insert_many_for_ledger 拒绝: 账本 %s 已删除（只读）", ledger_id
+        )
         return False
     conn = _connect()
     try:
@@ -802,6 +857,13 @@ def admin_remove_member(openid: str, target_nickname: str, ledger_id: Optional[i
         conn.commit()
         if cur.rowcount == 0:
             return False, "该用户不在这个账本里"
+        # e2e V13 发现的隔离泄漏：被移除者的 current_ledger_id 若还指向此账本，
+        # 他仍能以它为当前账本查账 → 回落到他自己的默认账本（与 leave_ledger 同规）
+        cur2 = conn.execute("SELECT current_ledger_id FROM users WHERE id=?", (target_uid,)).fetchone()
+        if cur2 and cur2["current_ledger_id"] == ledger_id:
+            default_lid = _get_default_ledger_id(conn, target_uid)
+            conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (default_lid, target_uid))
+            conn.commit()
         return True, f"已移除成员 {target_nickname}"
 
 

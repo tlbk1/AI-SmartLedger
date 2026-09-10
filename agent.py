@@ -88,6 +88,18 @@ def make_tools(openid: str) -> list:
             limit=limit,
         )
         import json
+        # T050（FR-014）：当前账本已删除 → 明确提示用户（历史只读可查）
+        if db.is_ledger_deleted(ledger_id):
+            info = db.get_ledger_info(ledger_id) or {"name": "该账本"}
+            return json.dumps(
+                {
+                    "ledger_deleted": True,
+                    "ledger_name": info["name"],
+                    "notice": f"⚠️ 账本「{info['name']}」已被删除，以下为历史账目（只读，不能再记账）。请在回复中明确提示用户。",
+                    "records": rows,
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(rows, ensure_ascii=False)
 
     @tool
@@ -98,6 +110,13 @@ def make_tools(openid: str) -> list:
         ledger_id = db.get_user_ledger_id(openid)
         if ledger_id is None:
             return "你还没有加入任何账本，请先创建或加入一个账本。"
+        # T050（FR-014）：已删除账本只读——不能再记账
+        if db.is_ledger_deleted(ledger_id):
+            info = db.get_ledger_info(ledger_id) or {"name": "该账本"}
+            return (
+                f"不能记账：账本「{info['name']}」已被删除（只读，仅能查看历史账目）。"
+                "请先切换到其他账本，或创建新账本。"
+            )
         user_id = db.get_or_create_user(openid)
         txns = []
         for t in transactions:
@@ -143,7 +162,11 @@ def make_tools(openid: str) -> list:
         if not ledgers:
             return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
         cur = db.get_current_ledger_name(openid)
-        lines = [f"- {l['name']}（口令 {l['invite_code']}，{l['role']}）" for l in ledgers]
+        lines = []
+        for l in ledgers:
+            # T050：已删除的账本保留在列表里（历史可查），但明确标注
+            tag = "，**已删除（历史只读）**" if l.get("is_deleted") else ""
+            lines.append(f"- {l['name']}（口令 {l['invite_code']}，{l['role']}{tag}）")
         return f"你加入的账本（当前：{cur or '无'}）：\n" + "\n".join(lines)
 
     @tool
@@ -308,6 +331,7 @@ AGENT_SYSTEM_PROMPT = """\
 - 记账/查账后，如已能取到当前账本名，在回复里可以提一句「（当前账本：xxx）」让用户知道在哪个账本
 - **管理操作（移除/改名/删账本/重置口令/同意加入）必须先明确作用于哪个账本**：用户有多个账本且未指明时，先问"你要操作哪个账本"；只有一个账本时直接执行，不必反复确认
 - **审批制**：加入申请需 owner 同意。申请人未获同意前看不到账本任何数据，不要向其透露账本内容
+- **已删除的账本**：账本被删后**仍能查看历史账目（只读）**。① 查账/账本列表里若出现「已删除」标记，必须在回复里明确告诉用户「该账本已被删除」；② 向已删除账本记账会被工具拒绝，这时应引导用户切换到其他账本或新建账本
 - 当前用户身份已由系统绑定，你不需要也无法修改它；不要在回复里提及任何身份标识（如 openid）
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
@@ -317,6 +341,29 @@ AGENT_SYSTEM_PROMPT = """\
 
 # 失败哨兵：agent 崩溃/报错时返回这个特殊标记，上游 graph.py 识别到它就触发「三分支兜底」。
 AGENT_FAILURE = "\x00__AGENT_FAILED__\x00"
+
+
+def _pending_joins_hint(openid: str) -> str:
+    """T049（US2/AC4）：owner 有待审批申请时，返回一段附加到 system prompt 的提示。
+
+    这是「推送尽力而为」的**兜底保底**：微信 48h 推送窗口不可靠，
+    所以 owner 任何一次对话都自动检查一次，让 agent 顺带提示。
+    非 owner / 无待审批 → 返回空串（不影响 prompt）。
+    """
+    try:
+        pending = db.list_pending_joins(openid)   # 内部已判定：非 owner 或无账本 → []
+    except Exception as e:                         # 兜底：查询失败绝不能拖垮对话
+        logger.warning("检查待审批失败（已忽略）: %s", e)
+        return ""
+    if not pending:
+        return ""
+    names = "、".join((p.get("nickname") or "（无昵称）") for p in pending)
+    return (
+        f"\n\n【系统提示 · 请务必执行】当前账本有 {len(pending)} 条待审批的加入申请"
+        f"（申请人：{names}）。请在本次回复的末尾**顺带提一句**提醒 owner，"
+        f"例如「（顺带一提：有 {len(pending)} 条加入申请待你同意，说『有哪些申请』可查看）」；"
+        f"不要打断用户当前的话题，不要额外调用工具去查。"
+    )
 
 
 def run_agent(openid: str, content: str) -> str:
@@ -334,11 +381,14 @@ def run_agent(openid: str, content: str) -> str:
         # 任务2保障：先确保用户已创建 + 自动有默认账本。
         # 否则首次交互(尤其反问金额阶段)用户还没被创建，工具找不到账本，记不上账。
         db.get_or_create_user(openid)
+        # T049（US2/AC4 + 审批流程第3步 · 兜底保底）：owner 每次对话时自动检查待审批，
+        # 附在 system prompt 里让 agent 顺带提示——不依赖 owner 主动查询（推送 48h 限制的保底）。
+        prompt = AGENT_SYSTEM_PROMPT.format(now=now) + _pending_joins_hint(openid)
         # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
         agent = create_react_agent(
             model=_get_model(),
             tools=make_tools(openid),          # openid 闭包注入，LLM 不可见
-            prompt=AGENT_SYSTEM_PROMPT.format(now=now),
+            prompt=prompt,
         )
         # 任务4：对话记忆——取该用户历史，拼上新消息一起给 agent，
         # 澄清反问后用户补答能接上（不然 agent 不知道之前问过什么）。
