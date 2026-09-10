@@ -21,6 +21,8 @@ env/
 # === 数据库(本地数据) ===
 *.db
 *.db.bak*
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 
