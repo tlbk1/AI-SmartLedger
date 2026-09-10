@@ -322,9 +322,12 @@ def summarize_query_result(rows: list[dict], original_question: str, now_str: st
         f"用户问了：「{original_question}」\n"
         f"查询到 {len(rows)} 条记录，总金额 ¥{total:.2f}。\n"
         f"明细：\n{json.dumps(rows, ensure_ascii=False, indent=2)}\n\n"
-        "请用简洁的中文总结这些数据，给用户一个易读的回复。"
+        "请用简洁的中文总结这些数据，给用户一个易读的回复。\n"
         "格式参考：「本月餐饮支出 ¥820，共 12 笔」\n"
-        "如果记录较多，列前几条明细 + 汇总。"
+        "如果记录较多，列前几条明细 + 汇总。\n"
+        "这是【共享账本】，明细里每条可能带 created_by_nickname（记账人昵称）："
+        "如果用户问「谁记的/谁花的」，或不同记录是不同人记的，请在总结里点出记账人；"
+        "否则不必逐条标注。"
     )
 
     try:
