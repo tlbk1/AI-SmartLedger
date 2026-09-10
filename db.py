@@ -243,34 +243,6 @@ class Transaction:
         )
 
 
-def insert_many(txns: list[Transaction]) -> bool:
-    """【已退役，仅测试引用】整批写入事务，全成全不记。
-    注意：此函数不写 ledger_id，会产出 ledger_id=NULL 的「无主账」，
-    任何账本查询都查不到。生产路径不应调用——记账请用 insert_many_for_ledger。
-    保留仅因 tests/test_wechat_mock.py 还引用；待该测试改用带账本版本后删除。
-    返回 True = 成功，False = 失败。
-    """
-    if not txns:
-        return True
-    conn = _connect()
-    try:
-        with conn:  # 上下文管理器：正常退出 commit，异常 rollback
-            for t in txns:
-                conn.execute(
-                    "INSERT INTO transactions (type, amount, category, note, happened_at, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    t.to_row(),
-                )
-        return True
-    except Exception as e:
-        # with conn 已 rollback
-        import logging
-        logging.getLogger(__name__).error("insert_many 失败: %s", e, exc_info=True)
-        return False
-    finally:
-        conn.close()
-
-
 def query(
     date_from: str,
     date_to: str,
@@ -554,16 +526,6 @@ def query_by_ledger(
     with _connect() as conn:
         rows = conn.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
-
-
-def migrate_old_data(openid: str, ledger_name: str = "我的账本") -> Optional[int]:
-    """【已退役】不再使用。之前会把所有 ledger_id 为 NULL 的记录整批归给触发者，
-    多用户下会张冠李戴。存量 NULL 记录请用一次性迁移脚本处理，不应走此函数。
-    （保留签名避免 import 报错，但不再执行归并逻辑。）"""
-    import warnings, logging
-    warnings.warn("migrate_old_data 已退役：会把 NULL 记录张冠李戴，勿再调用。", DeprecationWarning, stacklevel=2)
-    logging.getLogger(__name__).warning("migrate_old_data 被调用但已退役，不做任何归并")
-    return None
 
 
 # ════════════════════════ 账本内分权（owner = 管理 / member = 普通） ════════════════════════

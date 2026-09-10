@@ -138,9 +138,11 @@ class TestDatabase:
         """init() 应该成功创建表。"""
         db.init()  # 不抛异常就行
 
-    def test_insert_and_count(self):
+    def test_insert_and_count(self, isolated_db):
         """插入后能查到。"""
-        db.init()
+        uid = db.get_or_create_user("o_test_db")
+        db.create_ledger("o_test_db", "测试账本")
+        ledger_id = db.get_user_ledger_id("o_test_db")
         txn = db.Transaction(
             type="expense",
             amount=35.0,
@@ -148,17 +150,19 @@ class TestDatabase:
             note="午饭",
             happened_at="2026-08-14T12:30:00+08:00",
         )
-        ok = db.insert_many([txn])
+        ok = db.insert_many_for_ledger(ledger_id, uid, [txn])
         assert ok is True
 
-    def test_insert_batch_atomic(self):
+    def test_insert_batch_atomic(self, isolated_db):
         """批量插入正常。"""
-        db.init()
+        uid = db.get_or_create_user("o_test_db")
+        db.create_ledger("o_test_db", "测试账本")
+        ledger_id = db.get_user_ledger_id("o_test_db")
         txns = [
             db.Transaction("expense", 35.0, "餐饮", "午饭", "2026-08-14T12:00:00+08:00"),
             db.Transaction("expense", 12.0, "交通", "打车", "2026-08-14T18:00:00+08:00"),
         ]
-        ok = db.insert_many(txns)
+        ok = db.insert_many_for_ledger(ledger_id, uid, txns)
         assert ok is True
 
 
@@ -167,12 +171,14 @@ class TestDatabase:
 class TestQueryBoundary:
     """验证日期边界补全：不能丢最后一天的数据。"""
 
-    def test_last_day_not_excluded(self):
+    def test_last_day_not_excluded(self, isolated_db):
         """
         查 8/1 ~ 8/31，8/31 当天的记录应该被包含。
         这就是审查指出的 BETWEEN 坑——改用半开区间后应修复。
         """
-        db.init()
+        uid = db.get_or_create_user("o_test_db")
+        db.create_ledger("o_test_db", "测试账本")
+        ledger_id = db.get_user_ledger_id("o_test_db")
         # 插入一条 8/31 当天的记录
         txn = db.Transaction(
             type="expense",
@@ -181,7 +187,7 @@ class TestQueryBoundary:
             note="月末电影",
             happened_at="2026-08-31T20:00:00+08:00",  # 当天晚上
         )
-        db.insert_many([txn])
+        db.insert_many_for_ledger(ledger_id, uid, [txn])
 
         # 查 8 月
         rows = query_transactions(QueryParams(

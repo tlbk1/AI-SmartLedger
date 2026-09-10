@@ -20,6 +20,7 @@ env/
 
 # === 数据库(本地数据) ===
 *.db
+*.db.bak*
 *.sqlite
 *.sqlite3
 
