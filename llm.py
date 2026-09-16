@@ -358,8 +358,18 @@ def summarize_query_result(
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning("查询结果总结失败: %s", e)
-        # 降级：返回原始数据
-        return f"查到 {len(rows)} 条记录，总金额 ¥{total:.2f}。（AI 总结暂时不可用）"
+        # FR-032/SC-010：降级文案也逐条带记账人昵称（正常与降级两条路径 100% 可显示）
+        lines = []
+        for r in rows[:10]:
+            who = (r.get("created_by_nickname") or "").strip() or "未知"
+            sign = "-" if r.get("type") == "expense" else "+"
+            day = (r.get("happened_at") or "")[:10]
+            lines.append(f"· {day} {r.get('category', '其他')} {sign}¥{abs(r['amount']):.2f}（{who}）")
+        more = f"\n…另有 {len(rows) - 10} 条" if len(rows) > 10 else ""
+        return (
+            f"查到 {len(rows)} 条记录，总金额 ¥{total:.2f}。（AI 总结暂时不可用）\n"
+            + "\n".join(lines) + more
+        )
 
 
 # ──────────────────────────── ⑤ 兜底闲聊 ────────────────────────────

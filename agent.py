@@ -148,7 +148,33 @@ def make_tools(openid: str) -> list:
         """凭邀请口令【申请】加入别人的账本（审批制：需 owner 同意后才成为成员）。
         invite_code 是对方创建账本时给你的口令。"""
         ok, msg = db.apply_join(openid, invite_code)
-        return f"✅ {msg}" if ok else f"申请失败：{msg}"
+        if not ok:
+            return f"申请失败：{msg}"
+        # FR-038（评审问题8）：申请提交后尽力推送通知 owner（主通道）。
+        # 推送失败 _do_push_customer 自己会入 undelivered；生成阶段异常也入队（FR-039）。
+        import threading
+
+        def _notify_owner():
+            target = None
+            try:
+                from main import _do_push_customer  # 延迟导入，避免循环依赖
+                req = db.get_my_latest_pending_join(openid)
+                if not req:
+                    return
+                target = db.get_ledger_owner_openid(req["ledger_id"])
+                if target:
+                    nick = db._ensure_nickname(openid)
+                    _do_push_customer(target, (
+                        f"📢 「{nick}」申请加入「{req['ledger_name']}」（#{req['ledger_id']}），"
+                        f"回复「有哪些申请」查看；说「同意 {nick}」通过。"
+                    ))
+            except Exception:
+                logging.getLogger(__name__).warning("申请通知生成失败（已入待补发）", exc_info=True)
+                if target:
+                    db.enqueue_undelivered(target, "有新的加入申请待处理，回复「有哪些申请」查看。")
+
+        threading.Thread(target=_notify_owner, daemon=True).start()
+        return f"✅ {msg}"
 
     @tool
     def my_join_status(show: str) -> str:
@@ -157,31 +183,56 @@ def make_tools(openid: str) -> list:
 
     @tool
     def get_my_ledgers(show: str) -> str:
-        """列出当前用户加入的所有账本及邀请口令。调用时 show 填 'y' 即可（无实际作用，仅为了兼容工具调用）。"""
+        """列出当前用户加入的所有账本（编号/名称/角色/成员名单/标记）。show 填 'y' 即可。"""
         ledgers = db.get_my_ledgers(openid)
         if not ledgers:
             return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
-        cur = db.get_current_ledger_name(openid)
         lines = []
         for l in ledgers:
-            # T050：已删除的账本保留在列表里（历史可查），但明确标注
-            tag = "，**已删除（历史只读）**" if l.get("is_deleted") else ""
-            lines.append(f"- {l['name']}（口令 {l['invite_code']}，{l['role']}{tag}）")
-        return f"你加入的账本（当前：{cur or '无'}）：\n" + "\n".join(lines)
+            marks = []
+            if l.get("is_current"):
+                marks.append("当前")
+            if l.get("is_default"):
+                marks.append("默认")
+            pv = db.ledger_member_preview(l["id"])
+            members = "、".join(pv["names"])
+            extra = f" 等 {pv['total']} 人" if pv["total"] > len(pv["names"]) else ""
+            base = f"- #{l['id']}  {l['name']}（{l['role']}，成员：{members}{extra}"
+            if l.get("is_deleted"):
+                base += "，已删除·只读"
+            base += "）"
+            if l["role"] == "owner":
+                base += f" 口令 {l['invite_code']}"
+            if marks:
+                base += " ← " + " · ".join(marks)
+            lines.append(base)
+        return "你加入的账本（编号可用来切换或指定管理目标，如「#4」）：\n" + "\n".join(lines)
 
     @tool
-    def switch_ledger(ledger_name: str) -> str:
-        """把当前记账/查账账本切换到指定账本。ledger_name 是要切换到的账本名。
-        只在用户已加入的账本间切换；不会自动切换，用户明确要求才切。"""
-        ok, msg = db.switch_ledger(openid, ledger_name)
-        return f"✅ {msg}" if ok else f"切换失败：{msg}"
+    def switch_ledger(selector: str) -> str:
+        """切换当前记账/查账账本。selector 是账本编号（如「#4」，编号见 get_my_ledgers）或账本名。
+        名称对应多个账本时会返回候选列表——把候选原样转述给用户并等其回复编号，不要替用户选。"""
+        ok, msg = db.switch_ledger(openid, selector)
+        return f"✅ {msg}" if ok else msg
 
     # ── 管理操作（仅账本 owner / 管理员可用）──
 
+    def _resolve_admin_ledger(ledger_name: str):
+        """FR-023：管理操作指定账本——ledger_name 为空 → 当前账本；
+        否则按编号/名称在用户已加入的账本内解析。返回 (ledger_id, 错误消息)。"""
+        sel = (ledger_name or "").strip()
+        if not sel:
+            return db.get_user_ledger_id(openid), None
+        return db.resolve_ledger_selector(openid, sel)
+
     @tool
-    def list_pending(show: str) -> str:
-        """[仅管理员] 列出当前账本的待审批加入申请（含申请人昵称）。show 填 'y' 即可。"""
-        pending = db.list_pending_joins(openid)
+    def list_pending(show: str, ledger_name: str = "") -> str:
+        """[仅管理员] 列出待审批加入申请（含申请人昵称）。show 填 'y' 即可。
+        ledger_name 是要查看的账本（编号或名称，不填为当前账本）。"""
+        lid, err = _resolve_admin_ledger(ledger_name)
+        if err:
+            return err
+        pending = db.list_pending_joins(openid, lid)
         if not pending:
             return "当前没有待审批的加入申请。"
         lines = [f"- {p['nickname']}" for p in pending]
@@ -189,33 +240,44 @@ def make_tools(openid: str) -> list:
                "\n如同意，说「同意 <昵称>」即可。"
 
     @tool
-    def approve_join(applicant_nickname: str) -> str:
-        """[仅管理员] 同意某人的加入申请。applicant_nickname 是申请人的昵称。"""
-        ok, msg = db.approve_join(openid, applicant_nickname)
+    def approve_join(applicant_nickname: str, ledger_name: str = "") -> str:
+        """[仅管理员] 同意某人的加入申请。applicant_nickname 是申请人的昵称。
+        ledger_name 是要操作的账本（编号或名称，不填为当前账本）。"""
+        lid, err = _resolve_admin_ledger(ledger_name)
+        if err:
+            return f"操作失败：{err}"
+        ok, msg = db.approve_join(openid, applicant_nickname, lid)
         if not ok:
             return f"操作失败：{msg}"
-        # T018/FR-016：尽力推送通知申请人「已加入」（48h 窗口内；失败入 undelivered 下次补发）。
-        # 丢后台线程跑，不阻塞 owner 的回复（推送失败 _do_push_customer 自己会入 undelivered 队列）。
+        # FR-016/评审修订：尽力推送通知申请人「已加入」；通知用【目标账本】定位，
+        # 不再依赖 owner 的当前账本。失败/异常入 undelivered（见 _notify）。
         import threading
 
         def _notify():
+            target = None
             try:
                 from main import _do_push_customer  # 延迟导入，避免循环依赖
-                lid = db.get_user_ledger_id(openid)
-                target = db._get_openid_by_nickname_in_ledger(lid, applicant_nickname) if lid else None
-                ledger_name = db.get_current_ledger_name(openid) or "账本"
+                info = db.get_ledger_info(lid) or {"name": "账本"}
+                target = db._get_openid_by_nickname_in_ledger(lid, applicant_nickname)
                 if target:
-                    _do_push_customer(target, f"「{ledger_name}」的管理员已同意你加入 🎉")
+                    _do_push_customer(target, f"「{info['name']}」的管理员已同意你加入 🎉")
             except Exception:
-                logging.getLogger(__name__).warning("审批通知推送失败（已尽力，不阻塞主流程）", exc_info=True)
+                # FR-039：生成通知异常时入待补发记录，不静默丢失（目标可得时）
+                logging.getLogger(__name__).warning("审批通知生成失败（已入待补发）", exc_info=True)
+                if target:
+                    db.enqueue_undelivered(target, f"「账本」的管理员已同意你加入 🎉")
 
         threading.Thread(target=_notify, daemon=True).start()
         return f"✅ {msg}"
 
     @tool
-    def reset_invite_code(show: str) -> str:
-        """[仅管理员] 重置当前账本的邀请口令（旧口令失效，旧申请作废）。show 填 'y' 即可。"""
-        ok, result = db.reset_invite_code(openid)
+    def reset_invite_code(show: str, ledger_name: str = "") -> str:
+        """[仅管理员] 重置账本的邀请口令（旧口令失效，旧申请作废）。show 填 'y' 即可。
+        ledger_name 是要操作的账本（编号或名称，不填为当前账本）。"""
+        lid, err = _resolve_admin_ledger(ledger_name)
+        if err:
+            return f"操作失败：{err}"
+        ok, result = db.reset_invite_code(openid, lid)
         if ok:
             return f"✅ 已重置口令，新口令是 {result}（旧口令已失效，旧申请已作废）"
         return f"操作失败：{result}"
@@ -242,29 +304,56 @@ def make_tools(openid: str) -> list:
 
     @tool
     def set_nickname(nickname: str) -> str:
-        """设置当前用户的昵称，账本成员会用它来展示和识别。nickname 是用户昵称（非空白才生效）。"""
+        """设置当前用户的昵称（全局唯一，被占用会被拒绝）。nickname 是用户昵称（≤20字，不含换行）。"""
+        err = db.validate_nickname(openid, nickname)
+        if err:
+            return err if err != "昵称不能为空" else "昵称不能为空，请重新设置（比如「小王」）。"
         ok = db.set_nickname(openid, nickname)
         if not ok:
-            return "昵称不能为空，请重新设置（比如「小王」）。"
+            return "该昵称已被占用，请换一个"  # 并发抢占兜底（校验与写入之间被抢）
         return f"✅ 已把你的昵称设为「{nickname.strip()}」"
 
     @tool
-    def admin_remove_member(target_nickname: str) -> str:
+    def admin_remove_member(target_nickname: str, ledger_name: str = "") -> str:
         """[仅管理员] 从账本移除一个成员，按昵称查人。target_nickname 是被移除者的昵称。
+        ledger_name 是要操作的账本（编号或名称，不填为当前账本）。
         只有账本创建者(owner)能执行。普通成员调用会被拒绝。"""
-        ok, msg = db.admin_remove_member(openid, target_nickname)
+        lid, err = _resolve_admin_ledger(ledger_name)
+        if err:
+            return f"操作失败：{err}"
+        ok, msg = db.admin_remove_member(openid, target_nickname, lid)
         return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
     @tool
-    def admin_rename_ledger(new_name: str) -> str:
-        """[仅管理员] 修改账本名。new_name 是新账本名。只有账本 owner 能执行。"""
-        ok, msg = db.admin_rename_ledger(openid, new_name)
+    def admin_rename_ledger(new_name: str, ledger_name: str = "") -> str:
+        """[仅管理员] 修改账本名。new_name 是新账本名。
+        ledger_name 是要改名的账本（编号或名称，不填为当前账本）。只有账本 owner 能执行。"""
+        lid, err = _resolve_admin_ledger(ledger_name)
+        if err:
+            return f"操作失败：{err}"
+        ok, msg = db.admin_rename_ledger(openid, new_name, lid)
         return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
     @tool
-    def admin_delete_ledger(confirm: str) -> str:
-        """[仅管理员] 删除当前账本。只有账本 owner 能执行。确认删除时 confirm 填 'yes'。"""
-        ok, msg = db.admin_delete_ledger(openid)
+    def admin_delete_ledger(confirm: str, ledger_name: str = "") -> str:
+        """[仅管理员] 删除账本。ledger_name 是要删除的账本（编号或名称，不填为当前账本）。
+        只有账本 owner 能执行。confirm 填 'yes' 表示用户已确认。
+        删除的是用户默认账本时必须先向用户复述后果并取得确认（工具会拦截未确认的执行）。"""
+        lid, err = _resolve_admin_ledger(ledger_name)
+        if err:
+            return f"操作失败：{err}"
+        if (confirm or "").strip().lower() != "yes":
+            if db.is_default_ledger(openid, lid):
+                # FR-014：删除默认账本必须先确认——告知后果（重建空账本、相当于清空）
+                info = db.get_ledger_info(lid) or {"name": "该账本", "id": lid}
+                return (
+                    f"⚠️ 「{info['name']}」（#{info['id']}）是你的默认账本，删除后：\n"
+                    f"· 会自动重建一个空的默认账本，日常记账从零开始（相当于清空）\n"
+                    f"· 原账目不会真正删除，历史仍可在原账本查看\n"
+                    f"确认删除吗？用户确认后请再次调用本工具并把 confirm 填 'yes'。"
+                )
+            return "请先向用户确认是否删除，确认后把 confirm 填 'yes' 再执行。"
+        ok, msg = db.admin_delete_ledger(openid, lid)
         return f"✅ {msg}" if ok else f"操作失败：{msg}"
 
     @tool
@@ -288,22 +377,22 @@ AGENT_SYSTEM_PROMPT = """\
 当前时间（Asia/Shanghai）：{now}
 
 你有以下工具可用：
-- record_transactions(transactions): 记一笔或多笔账（支出/收入），会自动记到当前用户所属账本
+- record_transactions(transactions): 记一笔或多笔账（支出/收入），自动记到当前账本
 - query_transactions(date_from, date_to, ...): 查询账单（只读），查当前账本所有成员的账（会显示是谁记的）
 - create_ledger(name): 创建账本，返回邀请口令（创建者自动成为该账本管理员）
 - join_ledger(invite_code): 凭口令【申请】加入别人的账本（审批制，需 owner 同意后才成为成员）
 - my_join_status(): 查看自己所有加入申请的状态（待审批/已通过）
-- get_my_ledgers(): 列出当前用户加入的所有账本及当前是哪个
-- switch_ledger(ledger_name): 把当前记账/查账账本切换到指定账本（用户明确要求才切）
+- get_my_ledgers(): 列出用户加入的所有账本（编号 #id、名称、角色、成员名单、当前/默认/已删标记）
+- switch_ledger(selector): 切换当前账本到 selector（编号如「#4」，或账本名）。名称对应多个账本时会返回候选列表——**把候选原样转述给用户并等其回复编号，绝不替用户选**
 - list_members(): 列出当前账本的成员（昵称+角色）
-- set_nickname(nickname): 设置当前用户的昵称
-- list_pending(): [仅管理员] 查看待审批的加入申请（含申请人昵称）
-- approve_join(applicant_nickname): [仅管理员] 同意某人加入（按申请人昵称）
-- reset_invite_code(): [仅管理员] 重置账本口令（旧口令失效、旧申请作废）
+- set_nickname(nickname): 设置用户昵称（**全局唯一**，被占用/非法会返回拒绝原因，照实转述即可）
+- list_pending(show, ledger_name): [仅管理员] 查看待审批加入申请；ledger_name 可指定账本（编号或名称，不填=当前账本）
+- approve_join(applicant_nickname, ledger_name): [仅管理员] 同意某人加入
+- reset_invite_code(show, ledger_name): [仅管理员] 重置账本口令（旧口令失效、旧申请作废）
 - leave_ledger(): 退出当前账本（仅普通成员；管理员不能退出）
-- admin_remove_member(target_nickname): [仅管理员] 按昵称移除账本成员（不能移除管理员）
-- admin_rename_ledger(new_name): [仅管理员] 改账本名
-- admin_delete_ledger(): [仅管理员] 删除账本（成员会自动回落到各自默认账本）
+- admin_remove_member(target_nickname, ledger_name): [仅管理员] 按昵称移除账本成员（不能移除管理员）
+- admin_rename_ledger(new_name, ledger_name): [仅管理员] 改账本名
+- admin_delete_ledger(confirm, ledger_name): [仅管理员] 删除账本（所有相关用户的当前账本会自动回落到各自默认账本；**删除默认账本时工具会先返回确认话术，必须取得用户明确确认后才执行**）
 - ask_clarify(question): 信息不足时反问用户
 
 预设分类（只能用这些，拿不准归「其他」）：
@@ -319,7 +408,7 @@ AGENT_SYSTEM_PROMPT = """\
 6. 用户说「切换到账本 xxx」/「用 xxx 记账」→ 用 switch_ledger
 7. 用户首次加入或想设置称呼 → 用 set_nickname 把昵称存起来，方便账本成员识别
 8. 用户说「有哪些成员/人」→ 用 list_members
-9. **管理操作（仅 owner）**：「有哪些申请」→ list_pending；「同意 xxx 加入」→ approve_join；「移除成员 xxx」→ admin_remove_member；「改账本名」→ admin_rename_ledger；「重置口令」→ reset_invite_code；「删账本」→ admin_delete_ledger。**这类操作只有账本 owner 能做，普通成员调用会被工具拒绝（照实回复即可）**
+9. **管理操作（仅 owner）**：「有哪些申请」→ list_pending；「同意 xxx 加入」→ approve_join；「移除成员 xxx」→ admin_remove_member；「改账本名」→ admin_rename_ledger；「重置口令」→ reset_invite_code；「删账本」→ admin_delete_ledger。这些工具都支持 ledger_name 指定目标账本（不填=当前账本）——**用户点名了其他账本时必须把编号/名称传进 ledger_name**。**这类操作只有账本 owner 能做，普通成员调用会被工具拒绝（照实回复即可）**
 10. 用户说「退出账本」→ 用 leave_ledger（普通成员可退；管理员会被拒绝，可改说删账本）
 11. 信息不足（缺金额/分类不明/昵称/口令没给全）→ 用 ask_clarify 反问，直到信息够了再继续
 12. 不确定用户在干嘛 → 友好打招呼，提示用法
@@ -329,9 +418,13 @@ AGENT_SYSTEM_PROMPT = """\
 - 时间默认「现在」，支持「昨天」「上周五」等相对时间
 - 每步只调用最需要的工具，不要重复查询
 - 记账/查账后，如已能取到当前账本名，在回复里可以提一句「（当前账本：xxx）」让用户知道在哪个账本
-- **管理操作（移除/改名/删账本/重置口令/同意加入）必须先明确作用于哪个账本**：用户有多个账本且未指明时，先问"你要操作哪个账本"；只有一个账本时直接执行，不必反复确认
+- **账本编号**：编号形如 #4，是账本的固定编号（get_my_ledgers 列表里展示，永不变化）。用户用编号指定时原样传给工具；编号不存在时照实报错，**不要猜、不要替换成其他账本**
+- **重名不猜**：任何工具返回「回复编号选择」的候选列表时，把候选**原样转述**给用户并等待回复，绝不静默替用户挑一个；候选要现查现转述，不引用历史列表
+- **管理操作必须明确账本**（移除/改名/删账本/重置口令/同意加入/查待审批）：用户点名了账本（编号或名称）就把 ledger_name 传给工具；用户有多个账本且未指明时，先问「你要操作哪个账本」（可提示回复『我的账本』查看编号）；只有一个账本时直接执行，不必反复确认
+- **昵称全局唯一**：设置被占用/非法的昵称会被拒绝，把工具返回的原因转述给用户即可，不要猜测占用者是谁
 - **审批制**：加入申请需 owner 同意。申请人未获同意前看不到账本任何数据，不要向其透露账本内容
-- **已删除的账本**：账本被删后**仍能查看历史账目（只读）**。① 查账/账本列表里若出现「已删除」标记，必须在回复里明确告诉用户「该账本已被删除」；② 向已删除账本记账会被工具拒绝，这时应引导用户切换到其他账本或新建账本
+- **已删除的账本**：删除后所有人（含 owner）的当前账本会自动回落到各自默认账本；用户显式切进去看历史是**合法只读**状态。① 列表/查账里出现「已删除」标记，必须明确告知用户；② 向已删除账本记账或做管理操作会被工具拒绝，引导用户切换或新建
+- **删默认账本必须先确认**：admin_delete_ledger 返回确认话术时，把后果原样告诉用户（会重建空的默认账本、日常记账相当于清空重来），取得明确同意后才把 confirm 填 'yes' 再次调用执行；绝不跳过确认
 - 当前用户身份已由系统绑定，你不需要也无法修改它；不要在回复里提及任何身份标识（如 openid）
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
