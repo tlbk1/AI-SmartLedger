@@ -307,11 +307,26 @@ def extract_query_params(content: str, now_str: str) -> Optional[QueryParams]:
 
 # ──────────────────────────── ④ 查询结果总结 ────────────────────────────
 
-def summarize_query_result(rows: list[dict], original_question: str, now_str: str) -> str:
+def summarize_query_result(
+    rows: list[dict],
+    original_question: str,
+    now_str: str,
+    ledger_deleted: bool = False,
+) -> str:
     """
     把 SQL 查询结果 + 用户原问题喂给 LLM，总结成自然语言。
+
+    T050（FR-014）：ledger_deleted=True 时，明确提示"该账本已被删除（历史只读）"。
     """
+    # T050：已删账本的提示语（两种分支都要带）
+    deleted_note = (
+        "\n【重要】该账本**已被删除**，以下是历史账目（只读，不能再记账）。"
+        "请在回复开头或结尾明确提示用户「该账本已被删除」。"
+    ) if ledger_deleted else ""
+
     if not rows:
+        if ledger_deleted:
+            return "该账本已被删除，且没有查到相关历史记录。"
         return "没有查到相关记录。"
 
     client = _get_client()
@@ -322,9 +337,13 @@ def summarize_query_result(rows: list[dict], original_question: str, now_str: st
         f"用户问了：「{original_question}」\n"
         f"查询到 {len(rows)} 条记录，总金额 ¥{total:.2f}。\n"
         f"明细：\n{json.dumps(rows, ensure_ascii=False, indent=2)}\n\n"
-        "请用简洁的中文总结这些数据，给用户一个易读的回复。"
+        "请用简洁的中文总结这些数据，给用户一个易读的回复。\n"
         "格式参考：「本月餐饮支出 ¥820，共 12 笔」\n"
-        "如果记录较多，列前几条明细 + 汇总。"
+        "如果记录较多，列前几条明细 + 汇总。\n"
+        "这是【共享账本】，明细里每条可能带 created_by_nickname（记账人昵称）："
+        "如果用户问「谁记的/谁花的」，或不同记录是不同人记的，请在总结里点出记账人；"
+        "否则不必逐条标注。"
+        f"{deleted_note}"
     )
 
     try:
@@ -339,8 +358,18 @@ def summarize_query_result(rows: list[dict], original_question: str, now_str: st
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning("查询结果总结失败: %s", e)
-        # 降级：返回原始数据
-        return f"查到 {len(rows)} 条记录，总金额 ¥{total:.2f}。（AI 总结暂时不可用）"
+        # FR-032/SC-010：降级文案也逐条带记账人昵称（正常与降级两条路径 100% 可显示）
+        lines = []
+        for r in rows[:10]:
+            who = (r.get("created_by_nickname") or "").strip() or "未知"
+            sign = "-" if r.get("type") == "expense" else "+"
+            day = (r.get("happened_at") or "")[:10]
+            lines.append(f"· {day} {r.get('category', '其他')} {sign}¥{abs(r['amount']):.2f}（{who}）")
+        more = f"\n…另有 {len(rows) - 10} 条" if len(rows) > 10 else ""
+        return (
+            f"查到 {len(rows)} 条记录，总金额 ¥{total:.2f}。（AI 总结暂时不可用）\n"
+            + "\n".join(lines) + more
+        )
 
 
 # ──────────────────────────── ⑤ 兜底闲聊 ────────────────────────────
