@@ -31,7 +31,7 @@ def _setup_owner_with_ledger():
 # ---- T006: 申请后 status=pending ----
 def test_apply_join_pending(iso):
     owner, code, lid = _setup_owner_with_ledger()
-    ok, msg = db.apply_join("o_applicant", code)
+    ok, msg, _ = db.apply_join("o_applicant", code)
     assert ok, msg
     assert db.get_my_join_status("o_applicant", lid) == "pending"
 
@@ -39,7 +39,7 @@ def test_apply_join_pending(iso):
 # ---- T007: 无效口令不产生申请 ----
 def test_invalid_invite_code(iso):
     _setup_owner_with_ledger()
-    ok, msg = db.apply_join("o_applicant", "bogus123")
+    ok, msg, _ = db.apply_join("o_applicant", "bogus123")
     assert not ok
     assert "口令" in msg
 
@@ -281,7 +281,7 @@ def test_reset_invite_code_expires_pending(iso):
     # 旧 pending 申请作废
     assert db.get_my_join_status("o_applicant", lid) == "expired"
     # 旧口令失效
-    ok2, msg2 = db.apply_join("o_other", code)
+    ok2, msg2, _ = db.apply_join("o_other", code)
     assert not ok2
 
 
@@ -552,3 +552,46 @@ def test_multi_ledger_requires_target(iso):
     assert db.is_ledger_admin("o_multi", other_lid) is False
     ok3, msg3 = db.admin_delete_ledger("o_multi", other_lid)
     assert not ok3, "对非自己 owner 的账本应拒绝管理操作"
+
+
+# ════════ FR-038：申请通知必须送达【本次申请】的 owner（评审缺陷回归）════════
+#
+# 旧实现用 get_my_latest_pending_join（该用户最新一条 pending）定位通知对象，
+# 用户先后申请多本账时，重新申请第一本会把通知送给第二本的 owner，第一本的
+# owner 永远收不到——「申请后 owner 必可达」失效。
+
+def test_apply_join_returns_applied_ledger_id(iso):
+    """FR-038：apply_join 必须回报【本次申请】的账本 id（通知定位的唯一依据）。"""
+    owner, code, lid = _setup_owner_with_ledger()
+    db.get_or_create_user("o_app")
+    ok, _msg, applied_lid = db.apply_join("o_app", code)
+    assert ok and applied_lid == lid
+
+
+def test_apply_join_reapply_targets_the_same_ledger(iso):
+    """FR-038：先后申请两本账后重新申请第一本，仍须回报第一本的 id。"""
+    owner_a, code_a, lid_a = _setup_owner_with_ledger()
+    db.get_or_create_user("o_owner_b")
+    db.create_ledger("o_owner_b", "AA 账本")
+    lid_b = db.get_user_ledger_id("o_owner_b")
+    code_b = [l["invite_code"] for l in db.get_my_ledgers("o_owner_b") if l["id"] == lid_b][0]
+
+    db.get_or_create_user("o_app2")
+    assert db.apply_join("o_app2", code_a)[2] == lid_a
+    assert db.apply_join("o_app2", code_b)[2] == lid_b
+    # 第三次：重新申请第一本（走「已有 pending → 幂等」分支）
+    # 旧实现此处会让通知发给 lid_b 的 owner
+    ok, _msg, applied_lid = db.apply_join("o_app2", code_a)
+    assert ok and applied_lid == lid_a, "重新申请应回报第一本的账本 id"
+
+    # 通知目标由该 id 解析：必须是 A 的 owner，不是 B 的
+    assert db.get_ledger_owner_openid(applied_lid) == "o_owner"
+    assert db.get_ledger_owner_openid(applied_lid) != "o_owner_b"
+
+
+def test_apply_join_failure_reports_no_ledger(iso):
+    """FR-038：申请失败（口令无效）时账本 id 为 None，通知方不得据此定位。"""
+    _setup_owner_with_ledger()
+    db.get_or_create_user("o_app3")
+    ok, msg, applied_lid = db.apply_join("o_app3", "bogus123")
+    assert not ok and applied_lid is None

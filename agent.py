@@ -148,25 +148,27 @@ def make_tools(openid: str) -> list:
     def join_ledger(invite_code: str) -> str:
         """凭邀请口令【申请】加入别人的账本（审批制：需 owner 同意后才成为成员）。
         invite_code 是对方创建账本时给你的口令。"""
-        ok, msg = db.apply_join(openid, invite_code)
+        ok, msg, applied_lid = db.apply_join(openid, invite_code)
         if not ok:
             return f"申请失败：{msg}"
         # FR-038（评审问题8）：申请提交后尽力推送通知 owner（主通道）。
         # 推送失败 _do_push_customer 自己会入 undelivered；生成阶段异常也入队（FR-039）。
+        # 定位用【本次申请的账本 id】——查「最新一条 pending」会在用户先后申请多本账时送错 owner。
+        info = db.get_ledger_info(applied_lid) if applied_lid else None
+        ledger_name = (info or {}).get("name") or "该账本"
         import threading
 
         def _notify_owner():
             target = None
             try:
                 from main import _do_push_customer  # 延迟导入，避免循环依赖
-                req = db.get_my_latest_pending_join(openid)
-                if not req:
+                if applied_lid is None:
                     return
-                target = db.get_ledger_owner_openid(req["ledger_id"])
+                target = db.get_ledger_owner_openid(applied_lid)
                 if target:
                     nick = db._ensure_nickname(openid)
                     _do_push_customer(target, (
-                        f"📢 「{nick}」申请加入「{req['ledger_name']}」（#{req['ledger_id']}），"
+                        f"📢 「{nick}」申请加入「{ledger_name}」（#{applied_lid}），"
                         f"回复「有哪些申请」查看；说「同意 {nick}」通过。"
                     ))
             except Exception:
@@ -254,21 +256,28 @@ def make_tools(openid: str) -> list:
             return f"操作失败：{msg}"
         # FR-016/评审修订：尽力推送通知申请人「已加入」；通知用【目标账本】定位，
         # 不再依赖 owner 的当前账本。失败/异常入 undelivered（见 _notify）。
+        # 文案在推送与补发两条路径必须一致：补发路径若拿不到账本名就**不提名字**，
+        # 不能写死占位符冒充真实账本名（曾把真实名字替换成「账本」两字）。
+        info = db.get_ledger_info(lid)
+        ledger_name = (info or {}).get("name")
+        notice = (
+            f"「{ledger_name}」的管理员已同意你加入 🎉" if ledger_name
+            else "你申请的账本管理员已同意你加入 🎉"
+        )
         import threading
 
         def _notify():
             target = None
             try:
                 from main import _do_push_customer  # 延迟导入，避免循环依赖
-                info = db.get_ledger_info(lid) or {"name": "账本"}
                 target = db._get_openid_by_nickname_in_ledger(lid, applicant_nickname)
                 if target:
-                    _do_push_customer(target, f"「{info['name']}」的管理员已同意你加入 🎉")
+                    _do_push_customer(target, notice)
             except Exception:
                 # FR-039：生成通知异常时入待补发记录，不静默丢失（目标可得时）
                 logging.getLogger(__name__).warning("审批通知生成失败（已入待补发）", exc_info=True)
                 if target:
-                    db.enqueue_undelivered(target, f"「账本」的管理员已同意你加入 🎉")
+                    db.enqueue_undelivered(target, notice)
 
         threading.Thread(target=_notify, daemon=True).start()
         return f"✅ {msg}"

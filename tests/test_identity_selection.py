@@ -204,6 +204,121 @@ def test_current_pointer_never_null_after_events(iso):
     assert _current_ledger_id_of("o_b2") is not None
 
 
+# ---- FR-012/FR-035：被移除/退出后不得再读到那本账（账本隔离回归）----
+#
+# 这一组覆盖的都是「默认锚点指向共享账本」的脏状态。它由 db.init() 的存量回填产生：
+# 没有「我的账本」的用户，锚点会被回填成最近加入的未删除账本（含别人的共享账本）。
+# 旧实现只在兜底链里判断 deleted_at，不判断成员关系，于是被移除的人下次对话就会被
+# 路由回那本账，继续读到 owner 的流水。
+
+def _point_default_anchor_at(openid: str, ledger_id):
+    """把用户的默认锚点与当前指针都指向指定账本（构造存量回填后的脏状态）。"""
+    uid = db.get_or_create_user(openid)
+    with db._connect() as conn:
+        conn.execute(
+            "UPDATE users SET default_ledger_id=?, current_ledger_id=? WHERE id=?",
+            (ledger_id, ledger_id, uid),
+        )
+        conn.commit()
+
+
+def test_removed_member_cannot_read_shared_ledger(iso):
+    """FR-035 + 账本隔离：被移除后，锚点指向的共享账本不得再被兜底链选中。"""
+    owner, b, lid = _shared_ledger_with_member()
+    _point_default_anchor_at(b, lid)
+
+    ok, _msg = db.admin_remove_member(owner, "小王", lid)
+    assert ok
+    assert db.is_ledger_member(b, lid) is False
+
+    # 被移除后，读路径不得再返回那本账
+    assert db.get_user_ledger_id(b) != lid, "被移除者的读路径仍指向共享账本（账本隔离失效）"
+    assert db.query_by_ledger(lid, "2026-09-01", "2026-09-30") is not None  # owner 仍可查
+    b_read = db.get_user_ledger_id(b)
+    assert b_read is not None and db.is_ledger_member(b, b_read) is True
+
+
+def test_removed_member_anchor_rebuilt(iso):
+    """FR-012：锚点指向被移除的账本时重建锚点（锚点永不落空，且不再指向他人账本）。"""
+    owner, b, lid = _shared_ledger_with_member()
+    _point_default_anchor_at(b, lid)
+
+    assert db.admin_remove_member(owner, "小王", lid)[0]
+
+    new_default = _default_ledger_id_of(b)
+    assert new_default is not None, "锚点不得落空"
+    assert new_default != lid, "锚点不得继续指向已被移除的账本"
+    assert db.is_ledger_member(b, new_default) is True
+
+
+def test_fallback_chain_skips_ledger_where_not_member(iso):
+    """FR-035：兜底链的「默认账本优先」分支必须校验成员关系，不能只看 deleted_at。
+
+    场景：锚点指向一本该用户**从未加入**的账本（存量回填产生的另一种脏状态）。
+    注意不能靠「移除成员」来构造——移除时锚点重建会把锚点改掉，缺陷就被绕过了；
+    这里要隔离出的正是「锚点还指着、但人已不在成员表」的那一次判断。
+    """
+    owner, b, lid = _shared_ledger_with_member()
+    other = "o_never_member"
+    db.get_or_create_user(other)
+    other_uid = db.get_or_create_user(other)
+    with db._connect() as conn:
+        conn.execute("UPDATE users SET default_ledger_id=?, current_ledger_id=NULL WHERE id=?",
+                     (lid, other_uid))
+        conn.commit()
+    assert db.is_ledger_member(other, lid) is False, "前置：这个人不是该账本成员"
+
+    with db._connect() as conn:
+        fallback = db._fallback_ledger_id(conn, other_uid)
+    assert fallback != lid, "兜底链把非成员送进了别人的共享账本"
+    assert fallback is not None and db.is_ledger_member(other, fallback) is True
+
+
+def test_leaver_anchor_rebuilt(iso):
+    """FR-012：主动退出时同样重建锚点（member 退出那条路）。"""
+    owner, b, lid = _shared_ledger_with_member()
+    _point_default_anchor_at(b, lid)
+
+    assert db.leave_ledger(b, lid)[0]
+
+    new_default = _default_ledger_id_of(b)
+    assert new_default is not None and new_default != lid
+    assert db.is_ledger_member(b, lid) is False
+    assert db.get_user_ledger_id(b) != lid
+
+
+def test_current_pointer_ignored_when_not_member(iso):
+    """读时止损：当前指针仍指向已退出的账本时，读路径也不得返回它（不依赖指针被清理干净）。"""
+    owner, b, lid = _shared_ledger_with_member()
+    _point_default_anchor_at(b, lid)
+    assert db.leave_ledger(b, lid)[0]
+
+    # 人为把当前指针写回那本账（模拟崩溃/脏数据未清理）
+    uid = db.get_or_create_user(b)
+    with db._connect() as conn:
+        conn.execute("UPDATE users SET current_ledger_id=? WHERE id=?", (lid, uid))
+        conn.commit()
+
+    assert db.get_user_ledger_id(b) != lid, "读路径信任了非成员的当前指针"
+
+
+def test_empty_nickname_does_not_break_ledger_paths(iso):
+    """FR-006：存量空昵称用户进入列表/选择路径不得抛异常（原来传错参会 TypeError）。"""
+    owner, b, lid = _shared_ledger_with_member()
+    uid = db.get_or_create_user(b)
+    with db._connect() as conn:
+        conn.execute("UPDATE users SET nickname='' WHERE id=?", (uid,))
+        conn.commit()
+
+    ledgers = db.get_my_ledgers(b)          # 走 ledger_member_preview → _ensure_nickname_by_id
+    assert ledgers and ledgers[0]["id"] is not None
+    pv = db.ledger_member_preview(lid)      # 直接覆盖预览路径
+    assert pv["total"] >= 1 and all(n.strip() for n in pv["names"])
+    ok, err = db.resolve_ledger_selector(b, "我们家")   # 重名候选路径也共用同一函数
+    assert ok == lid and err is None
+
+
+
 # ════════ US4：编号/名称选择，重名不猜（FR-018~FR-022）════════
 
 def _two_ledgers_same_name():

@@ -57,7 +57,7 @@ _c.close()
 check("V3b 新用户B默认昵称", (_nick_b or "").startswith("账本成员"), f"(昵称={_nick_b})")
 db.set_nickname("o_B", "小王")
 lid = db.get_user_ledger_id("o_A")
-ok, msg = db.apply_join("o_B", code)
+ok, msg, _ = db.apply_join("o_B", code)
 check("V3 申请提交成功", ok)
 check("V3 状态=pending", db.get_my_join_status("o_B", lid) == "pending")
 
@@ -100,7 +100,7 @@ check("V10 被移除者 current 回落默认账本", db.get_user_ledger_id("o_B"
       f"(当前={db.get_user_ledger_id('o_B')})")
 
 # ── V11 member 重新加入 → 退出 ──
-ok, msg = db.apply_join("o_B", code)
+ok, msg, _ = db.apply_join("o_B", code)
 check("V11 被移除后可重新申请", ok, msg)
 ok, msg = db.approve_join("o_A", "小王")
 check("V11 重新同意成功", ok, msg)
@@ -115,7 +115,7 @@ db.apply_join("o_C", code)
 ok, new_code = db.reset_invite_code("o_A")
 check("V12 新口令≠旧口令", ok and new_code != code)
 check("V12 旧申请作废", db.get_my_join_status("o_C", lid) == "expired")
-ok2, _ = db.apply_join("o_D", code)
+ok2, _, _ = db.apply_join("o_D", code)
 check("V12 旧口令失效", not ok2)
 
 # ── V13 删账本 → 成员回落各自默认账本 ──
@@ -148,7 +148,17 @@ db.set_nickname("o_E", "小E")
 db.apply_join("o_E", code_f)
 _hint = agent._pending_joins_hint("o_F")
 check("V14 owner 有待审批→提示含昵称", "待审批" in _hint and "小E" in _hint, f"({_hint[:60]}...)")
-check("V14 非 owner 不提示（不泄露）", agent._pending_joins_hint("o_E") == "")
+# 非 owner 不提示。必须让"空提示"有个会产生提示的真实原因——用普通成员「小G」测：
+# owner 在这本账上确实有待审批申请，小G 只是成员，所以提示空是因为权限判定生效，
+# 不是因为这本账本来就没有待审批。否则守卫被删掉这行断言照样通过（假绿）。
+db.get_or_create_user("o_G")
+db.set_nickname("o_G", "小G")
+db.apply_join("o_G", code_f)
+ok, _ = db.approve_join("o_F", "小G")
+_fid, _ferr = db.resolve_ledger_selector("o_F", "F的账本")
+check("V14 前置: 小G 已是 F 账本的普通成员", ok and _ferr is None and db.is_ledger_admin("o_G", _fid) is False)
+check("V14 前置: F 仍有待审批申请（小E）", db.list_pending_joins("o_F") != [])
+check("V14 非 owner 不提示（不泄露）", agent._pending_joins_hint("o_G") == "")
 
 # ── V15 T050: 已删账本可切进去看历史，且带"已删除"提示 ──
 _mine = {l["name"]: l for l in db.get_my_ledgers("o_B")}
@@ -165,7 +175,7 @@ _out = _json.loads(_tools["query_transactions"].invoke(
 check("V15 查账结果带已删除标记", _out.get("ledger_deleted") is True and "已被删除" in _out.get("notice", ""))
 check("V15 已删账本历史账目可见", len(_out.get("records", [])) >= 2)
 # US10/AC3：已删账本的口令失效（不能用旧口令申请）
-_ok_join, _msg_join = db.apply_join("o_Z", new_code)
+_ok_join, _msg_join, _ = db.apply_join("o_Z", new_code)
 check("V15 已删账本口令失效", not _ok_join, f"({_msg_join})")
 
 # ── V16 T050: 已删账本只读——不能记账（工具层友好拒绝 + db 层拦截）──

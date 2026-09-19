@@ -461,9 +461,17 @@ def _fallback_ledger_id(conn, user_id: int, exclude: Optional[int] = None) -> Op
 
     评审问题2修复：旧逻辑只按「最近加入」回退，会把用户静默落进别人的共享账本。
     exclude 用于回落场景排除刚失效的那个账本。
+
+    默认锚点必须**同时**是未删除且用户仍在成员表里：被移除/退出后锚点可能仍
+    指向那本账（`admin_remove_member`/`leave_ledger` 负责重建，此处是读时止损），
+    只判 deleted_at 会把已移除的人再送回那本账——账本隔离失效。
     """
     default_lid = _get_default_ledger_id(conn, user_id)
-    if default_lid is not None and default_lid != exclude:
+    if (
+        default_lid is not None
+        and default_lid != exclude
+        and _is_member_by_uid(conn, user_id, default_lid)
+    ):
         return default_lid
     row = conn.execute("""
         SELECT lm.ledger_id
@@ -474,6 +482,30 @@ def _fallback_ledger_id(conn, user_id: int, exclude: Optional[int] = None) -> Op
         LIMIT 1
     """, (user_id, exclude if exclude is not None else -1)).fetchone()
     return row["ledger_id"] if row else None
+
+
+def _is_member_by_uid(conn, user_id: int, ledger_id: int) -> bool:
+    """复用已打开的连接判断成员关系（`is_ledger_member` 按 openid 查且另开连接）。"""
+    return conn.execute(
+        "SELECT 1 FROM ledger_members WHERE ledger_id=? AND user_id=?",
+        (ledger_id, user_id),
+    ).fetchone() is not None
+
+
+def _rebuild_default_anchor(conn, uid: int, dead_ledger_id: int, now: str) -> bool:
+    """FR-012：默认锚点指向的账本失效（被移除/退出）时重建锚点，锚点永不落空。
+
+    与 `admin_delete_ledger` 的同名处理同源：先建一本新的「我的账本」占位，
+    再让兜底链在该账本被删时把锚点改指到其它未删除的共同账本。
+    **必须在删除成员关系之前调用**——否则 `_get_default_ledger_id` 的判断条件
+    （用户是否以该账本为默认）已不成立。
+    返回是否重建。
+    """
+    if _get_default_ledger_id(conn, uid) != dead_ledger_id:
+        return False
+    new_lid = _create_default_ledger(conn, uid, now)
+    conn.execute("UPDATE users SET default_ledger_id=? WHERE id=?", (new_lid, uid))
+    return True
 
 
 def _settle_current_ledger(conn, uid: int, dead_ledger_id: int):
@@ -504,10 +536,13 @@ def get_user_ledger_id(openid: str) -> Optional[int]:
             WHERE u.openid = ?
         """, (openid,)).fetchone()
         if row and row["current_ledger_id"] is not None:
-            # 账本存在即返回（含已软删除——用户显式切入是为了看历史，只读）
+            # 账本存在即返回（含已软删除——用户显式切入是为了看历史，只读）。
+            # 仍要求成员关系成立：被移除/退出后失效的指针不得再读到该账本（账本隔离）。
             l = conn.execute("SELECT 1 FROM ledgers WHERE id=?", (row["current_ledger_id"],)).fetchone()
             if l:
-                return row["current_ledger_id"]
+                u0 = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
+                if u0 and _is_member_by_uid(conn, u0["id"], row["current_ledger_id"]):
+                    return row["current_ledger_id"]
         # FR-035 兜底链：默认账本 → 最近加入的未删除账本 → None
         u = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
         if u is None:
@@ -553,22 +588,6 @@ def get_ledger_owner_openid(ledger_id: int) -> Optional[str]:
         return row["openid"] if row else None
 
 
-def get_my_latest_pending_join(openid: str) -> Optional[dict]:
-    """FR-038：取该用户最近一条 pending 申请（含账本 id/名），供"通知 owner"用。"""
-    user_id = get_or_create_user(openid)
-    with _connect() as conn:
-        row = conn.execute("""
-            SELECT jr.ledger_id, l.name AS ledger_name
-            FROM join_requests jr
-            JOIN ledgers l ON l.id = jr.ledger_id
-            WHERE jr.user_id = ? AND jr.status = 'pending'
-            ORDER BY jr.id DESC LIMIT 1
-        """, (user_id,)).fetchone()
-        if row is None:
-            return None
-        return {"ledger_id": row["ledger_id"], "ledger_name": row["ledger_name"]}
-
-
 def _members_preview(conn, ledger_id: int, limit: int = 5) -> tuple[list[str], int]:
     """FR-016：成员昵称预览——owner 优先、其余按加入顺序（稳定），截断并返回总人数。
     只返回昵称，绝不返回 openid（constitution 原则 II）。"""
@@ -582,7 +601,7 @@ def _members_preview(conn, ledger_id: int, limit: int = 5) -> tuple[list[str], i
     for r in rows[:limit]:
         nick = (r["nickname"] or "").strip()
         if not nick:
-            nick = _ensure_nickname_by_id(conn, r["id"])
+            nick = _ensure_nickname_by_id(r["id"])
         names.append(nick)
     return names, len(rows)
 
@@ -717,16 +736,6 @@ def switch_ledger(openid: str, selector: str) -> tuple[bool, str]:
                 "只能查看历史账目（只读），不能再记账。"
             )
         return True, f"已切到「{target['name']}」（#{target['id']}），后续记账/查账都在这个账本"
-
-
-def get_current_ledger_name(openid: str) -> str:
-    """取用户当前账本名（用于 agent 回复显示）。无则返回空串。"""
-    ledger_id = get_user_ledger_id(openid)
-    if ledger_id is None:
-        return ""
-    with _connect() as conn:
-        row = conn.execute("SELECT name FROM ledgers WHERE id=?", (ledger_id,)).fetchone()
-        return row["name"] if row else ""
 
 
 # ─── 记账 / 查账（带账本隔离）───
@@ -885,32 +894,36 @@ def _get_user_id_by_openid(conn, openid: str) -> Optional[int]:
 
 # ════════════════════════ 审批制加入（spec 002 / US1, US2） ════════════════════════
 
-def apply_join(openid: str, invite_code: str) -> tuple[bool, str]:
+def apply_join(openid: str, invite_code: str) -> tuple[bool, str, Optional[int]]:
     """US1/T010：凭口令提交加入申请 → 进入待审批(pending)。
 
     - 口令无效 → 失败
     - 已是成员 → 提示已是成员
     - 已有 pending → 幂等，不重复
-    返回 (成功?, 消息)。
+    返回 (成功?, 消息, 申请的目标账本 id)。
+
+    第三个返回值是调用方定位「本次申请的是哪本账」的唯一依据——通知 owner 必须
+    用它，不能查「该用户最新一条 pending」（用户先后申请多本账时会送错人）。
+    失败时账本 id 为 None。
     """
     user_id = get_or_create_user(openid)
     with _connect() as conn:
         found = _get_ledger_id_by_invite(conn, invite_code)
         if found is None:
-            return False, "口令不存在，请核对"
+            return False, "口令不存在，请核对", None
         ledger_id, name = found
         # 已是成员？
         if conn.execute(
             "SELECT 1 FROM ledger_members WHERE ledger_id=? AND user_id=?", (ledger_id, user_id)
         ).fetchone():
-            return False, f"你已经是「{name}」的成员了"
+            return False, f"你已经是「{name}」的成员了", None
         # 已有申请？
         row = conn.execute(
             "SELECT status FROM join_requests WHERE ledger_id=? AND user_id=?", (ledger_id, user_id)
         ).fetchone()
         if row:
             if row["status"] == "pending":
-                return True, f"你已经申请加入「{name}」，等管理员同意即可"
+                return True, f"你已经申请加入「{name}」，等管理员同意即可", ledger_id
             if row["status"] == "approved":
                 # 仍是成员 → 真的已是成员；若已被移除（ledger_members 无此人）→ 允许重新申请
                 still_member = conn.execute(
@@ -918,27 +931,27 @@ def apply_join(openid: str, invite_code: str) -> tuple[bool, str]:
                     (ledger_id, user_id),
                 ).fetchone()
                 if still_member:
-                    return False, f"你已经是「{name}」的成员了"
+                    return False, f"你已经是「{name}」的成员了", None
                 conn.execute(
                     "UPDATE join_requests SET status='pending', created_at=? WHERE ledger_id=? AND user_id=?",
                     (datetime.now(SHANGHAI).isoformat(), ledger_id, user_id),
                 )
                 conn.commit()
-                return True, f"已重新提交加入「{name}」的申请，等管理员同意"
+                return True, f"已重新提交加入「{name}」的申请，等管理员同意", ledger_id
             # expired/rejected 之外的旧记录 → 重新申请（覆盖为 pending）
             conn.execute(
                 "UPDATE join_requests SET status='pending', created_at=? WHERE ledger_id=? AND user_id=?",
                 (datetime.now(SHANGHAI).isoformat(), ledger_id, user_id),
             )
             conn.commit()
-            return True, f"已重新提交加入「{name}」的申请，等管理员同意"
+            return True, f"已重新提交加入「{name}」的申请，等管理员同意", ledger_id
         # 新建申请
         conn.execute(
             "INSERT INTO join_requests (ledger_id, user_id, status, created_at) VALUES (?, ?, 'pending', ?)",
             (ledger_id, user_id, datetime.now(SHANGHAI).isoformat()),
         )
         conn.commit()
-        return True, f"已提交加入「{name}」的申请，等管理员同意即可"
+        return True, f"已提交加入「{name}」的申请，等管理员同意即可", ledger_id
 
 
 def get_my_join_status(openid: str, ledger_id: int) -> Optional[str]:
@@ -1070,6 +1083,8 @@ def admin_remove_member(openid: str, target_nickname: str, ledger_id: Optional[i
         if row["role"] == "owner":
             return False, "不能移除管理员（owner）"
         target_uid = row["id"]
+        # FR-012：被移除者若以本账本为默认锚点，先重建锚点（必须在删除成员关系之前判断）
+        _rebuild_default_anchor(conn, target_uid, ledger_id, datetime.now(SHANGHAI).isoformat())
         cur = conn.execute(
             "DELETE FROM ledger_members WHERE ledger_id=? AND user_id=?",
             (ledger_id, target_uid),
@@ -1282,6 +1297,8 @@ def leave_ledger(openid: str, ledger_id: Optional[int] = None) -> tuple[bool, st
             return False, "你不在这个账本里"
         if row["role"] == "owner":
             return False, "管理员不能退出账本（可删除账本）"
+        # FR-012：退出者若以本账本为默认锚点，先重建锚点（必须在删除成员关系之前判断）
+        _rebuild_default_anchor(conn, uid, ledger_id, datetime.now(SHANGHAI).isoformat())
         conn.execute("DELETE FROM ledger_members WHERE ledger_id=? AND user_id=?", (ledger_id, uid))
         # FR-032/033/034：退出后当前账本确定回落（默认账本优先）
         _settle_current_ledger(conn, uid, ledger_id)
