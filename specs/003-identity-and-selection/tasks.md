@@ -43,8 +43,16 @@
 
 ## Phase 4: Convergence（2026-09-17 逐条核对）
 
-- [ ] T028 修正 `db.py:728` 过期注释——仍引用已删除的"旧 insert_many / query 签名"，实际两函数均已移除 per Constitution I / FR-037 (partial)
+- [x] T028 修正 `db.py:728` 过期注释——仍引用已删除的"旧 insert_many / query 签名" per Constitution I / FR-037 (partial)
 - [x] T029 ~~tasks.md 缺失而 plan.md 声称已回填~~ —— 由本次回填自解（plan.md:7 的表述随之成立） (missing)
+
+## Phase 5: Convergence（2026-09-18 PR 评审 5 条）
+
+- [x] T030 账本名校验：`create_ledger`/`admin_rename_ledger` 拒绝空/纯空白名（去首尾空白后存储）；工具 docstring + prompt 指引"没给名字先反问" per 评审①/FR-008 同类 (partial)
+- [x] T031 已删账本不展示口令（`get_my_ledgers` 工具层：owner 且未删才显示）——口令已失效，展示会误导转发 per 评审② (contradicts)
+- [x] T032 `get_or_create_user` 昵称改为 **INSERT 前**生成（`_gen_default_nickname(conn, None)`），根除"表内存在空昵称窗口期"的隐形依赖（唯一索引下会集体撞索引） per 评审③-2 (partial)
+- [x] T033 `query_by_ledger` 结果 pop `created_by_user_id`（内部 id 不外露给 LLM，昵称已由 created_by_nickname 提供） per 评审③-3 / Constitution II (partial)
+- [x] T034 评审 5 条对应测试（空名拒建/拒改、已删不显口令、结果无内部 id、连续建用户无空昵称行）→ 全量 **94 passed** + e2e 16/16 per 评审验证要求
 
 ## Notes
 

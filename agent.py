@@ -137,10 +137,11 @@ def make_tools(openid: str) -> list:
     @tool
     def create_ledger(name: str) -> str:
         """创建一个新的账本，创建者为账本 owner。返回邀请口令（别人凭口令加入）。
-        name 是账本名，如「我们家」「旅行账」。"""
+        name 是账本名，如「我们家」「旅行账」。name 不能为空——
+        用户没给名字时先反问（如「新账本叫什么名字？」），拿到名字再调用。"""
         ok, result = db.create_ledger(openid, name)
         if ok:
-            return f"✅ 已创建账本「{name}」，邀请口令是 {result}，把这口令发给要加入的人即可。"
+            return f"✅ 已创建账本「{name.strip()}」，邀请口令是 {result}，把这口令发给要加入的人即可。"
         return f"创建失败：{result}"
 
     @tool
@@ -201,7 +202,9 @@ def make_tools(openid: str) -> list:
             if l.get("is_deleted"):
                 base += "，已删除·只读"
             base += "）"
-            if l["role"] == "owner":
+            # 已删账本的口令已失效（_get_ledger_id_by_invite 过滤 deleted_at）——
+            # 展示它会误导用户转发（评审：朋友申请时只会收到"口令不存在"）
+            if l["role"] == "owner" and not l.get("is_deleted"):
                 base += f" 口令 {l['invite_code']}"
             if marks:
                 base += " ← " + " · ".join(marks)
@@ -326,7 +329,7 @@ def make_tools(openid: str) -> list:
 
     @tool
     def admin_rename_ledger(new_name: str, ledger_name: str = "") -> str:
-        """[仅管理员] 修改账本名。new_name 是新账本名。
+        """[仅管理员] 修改账本名。new_name 是新账本名（不能为空，用户没给时先反问）。
         ledger_name 是要改名的账本（编号或名称，不填为当前账本）。只有账本 owner 能执行。"""
         lid, err = _resolve_admin_ledger(ledger_name)
         if err:
@@ -402,7 +405,7 @@ AGENT_SYSTEM_PROMPT = """\
 工作方式（重要）：
 1. 用户说记账 → 用 record_transactions 记下，然后简单确认（回复时带上当前账本名）
 2. 用户说查账 → 用 query_transactions 查数据。**账本是共享的**：你能看到账本内所有成员记的账，每笔会带记账人昵称。总结时如涉及"谁记的"，可以提一下记账人
-3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取
+3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取；**没给名字先反问**（「新账本叫什么名字？」），不要用空名调用
 4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger **提交申请**（审批制）。告诉用户「已申请，等管理员同意」；**不要把申请说成"已加入"**
 5. 用户说「我有哪些账本」→ 用 get_my_ledgers；用户问「我的申请状态」→ 用 my_join_status
 6. 用户说「切换到账本 xxx」/「用 xxx 记账」→ 用 switch_ledger

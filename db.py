@@ -416,16 +416,16 @@ def get_or_create_user(openid: str, nickname: str = "") -> int:
                 conn.commit()
             return row["id"]
         now = datetime.now(SHANGHAI).isoformat()
+        # constitution III：昵称永不为空——**插入前**生成（FR-006 全局唯一）。
+        # 空名/'None' 永不进表：唯一索引下若表内存在一行空昵称，后续新用户的
+        # INSERT 会集体撞索引——安全性来自结构，不依赖"INSERT 后紧跟 UPDATE"的顺序
+        if not (nickname or "").strip():
+            nickname = _gen_default_nickname(conn, None)
         cur = conn.execute(
             "INSERT INTO users (openid, nickname, created_at) VALUES (?, ?, ?)",
             (openid, nickname, now),
         )
         user_id = cur.lastrowid
-        # constitution III：昵称永不为空——**插入前**生成（FR-006 全局唯一：
-        # 避免瞬时空名撞唯一索引）
-        if not (nickname or "").strip():
-            nick = _gen_default_nickname(conn, user_id)
-            conn.execute("UPDATE users SET nickname=? WHERE id=?", (nick, user_id))
         # 自动创建默认账本「我的账本」，用户是 owner，设为当前账本 + 默认锚点
         # （spec 003 FR-002/FR-012：身份与默认账本在初始化时一并建立）
         ledger_id = _create_default_ledger(conn, user_id, now)
@@ -517,7 +517,12 @@ def get_user_ledger_id(openid: str) -> Optional[int]:
 
 def create_ledger(openid: str, name: str) -> tuple[bool, str]:
     """创建账本，创建者为 owner，并设为该用户的当前账本（任务3）。
+    FR-008 同类校验（评审）：账本名不能为空/纯空白——否则列表里出现无名条目、
+    且无法按名字选中（空 selector 会被解析器当成"未指定"）。
     返回 (成功?, 结果消息或口令)。"""
+    name = (name or "").strip()
+    if not name:
+        return False, "账本名不能为空，请给账本起个名字（比如「我们家」「旅行账」）"
     user_id = get_or_create_user(openid)
     with _connect() as conn:
         invite = _gen_invite_code(conn)
@@ -725,7 +730,6 @@ def get_current_ledger_name(openid: str) -> str:
 
 
 # ─── 记账 / 查账（带账本隔离）───
-# 保留旧 insert_many / query 签名供原有测试用；新增带 ledger 的版本供 agent 用。
 
 def insert_many_for_ledger(ledger_id: int, created_by_user_id: int, txns: list[Transaction]) -> bool:
     """整批写入事务，每笔带上 ledger_id + created_by_user_id。
@@ -806,8 +810,10 @@ def query_by_ledger(
         out = []
         for r in rows:
             d = dict(r)
-            # 不返回 openid（即使表里有）；用记账人昵称兜底
+            # 不返回 openid（即使表里有）；内部 user_id 也不外露——昵称已由
+            # created_by_nickname 提供（评审：防 LLM 总结时吐出「记账人 3」）
             d.pop("openid", None)
+            d.pop("created_by_user_id", None)
             out.append(d)
         return out
 
@@ -1086,11 +1092,12 @@ def _nickname_taken(conn, nickname: str, exclude_user_id: Optional[int] = None) 
     return row is not None
 
 
-def _gen_default_nickname(conn, user_id: int, excluded_nickname: str = "") -> str:
+def _gen_default_nickname(conn, user_id: Optional[int] = None, excluded_nickname: str = "") -> str:
     """生成唯一默认昵称「账本成员 + 4位随机hex」（如"账本成员 a3f9"）。
 
     spec 003 修订（FR-006）：查重范围为**全系统用户**，不再限定账本——
     同时修正 001 期 docstring 与实现不一致的问题。
+    user_id 为 None（如新用户 INSERT 前）时全表查重。
     """
     import secrets
     for _ in range(50):
@@ -1205,7 +1212,11 @@ def _ensure_nickname_by_id(user_id: int) -> str:
 
 
 def admin_rename_ledger(openid: str, new_name: str, ledger_id: Optional[int] = None) -> tuple[bool, str]:
-    """US3/T021：owner 修改账本名（权限按目标账本判定）。返回 (成功?, 消息)。"""
+    """US3/T021：owner 修改账本名（权限按目标账本判定）。返回 (成功?, 消息)。
+    评审：新名不能为空/纯空白（与 create_ledger 同规）。"""
+    new_name = (new_name or "").strip()
+    if not new_name:
+        return False, "账本名不能为空，请给账本起个名字"
     if ledger_id is None:
         ledger_id = get_user_ledger_id(openid)
     if ledger_id is None:

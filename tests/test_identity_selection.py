@@ -439,7 +439,71 @@ def test_join_pushes_owner_notification(iso, monkeypatch):
     assert "小张" in row["text"] and "我们家" in row["text"]
 
 
-# ════════ US1：关注/回来欢迎语（FR-001/FR-005）════════
+# ════════ 评审补充（2026-09-18）：空名校验/已删口令/内部 id 外露 ════════
+
+def test_create_ledger_rejects_blank_name(iso):
+    """评审：空/纯空白账本名被拒（否则列表出现无名条目且无法按名选中）。"""
+    db.get_or_create_user("o_u")
+    ok, msg = db.create_ledger("o_u", "")
+    assert not ok and "名字" in msg
+    ok, msg = db.create_ledger("o_u", "   ")
+    assert not ok
+    # 正常名可创建且首尾空白被去除
+    ok, code = db.create_ledger("o_u", "  旅行账  ")
+    assert ok
+    names = [l["name"] for l in db.get_my_ledgers("o_u")]
+    assert "旅行账" in names
+
+
+def test_rename_rejects_blank_name(iso):
+    db.get_or_create_user("o_u")
+    db.create_ledger("o_u", "账本")
+    lid = db.get_user_ledger_id("o_u")
+    ok, msg = db.admin_rename_ledger("o_u", "  ", lid)
+    assert not ok and "名字" in msg
+    assert db.get_ledger_info(lid)["name"] == "账本"
+
+
+def test_my_ledgers_tool_hides_code_for_deleted(iso):
+    """评审：已删账本的口令已失效，列表不得展示（避免误导转发）。"""
+    import agent
+    db.get_or_create_user("o_owner")
+    db.create_ledger("o_owner", "旅行账")
+    lid = db.get_user_ledger_id("o_owner")
+    code = [l for l in db.get_my_ledgers("o_owner") if l["id"] == lid][0]["invite_code"]
+    # 删除前：显示口令
+    tools = {t.name: t for t in agent.make_tools("o_owner")}
+    assert code in tools["get_my_ledgers"].invoke({"show": "y"})
+    db.admin_delete_ledger("o_owner", lid)
+    # 删除后：仍列出（只读标记），但不显示口令
+    out = tools["get_my_ledgers"].invoke({"show": "y"})
+    assert "已删除" in out
+    assert code not in out, "已删账本不得展示已失效口令"
+
+
+def test_query_result_hides_internal_user_id(iso):
+    """评审：账目查询结果不向 LLM 外露 created_by_user_id（昵称已足够）。"""
+    owner, b, lid = _shared_ledger_with_member()
+    uid_b = db.get_or_create_user(b)
+    db.insert_many_for_ledger(lid, uid_b, [
+        db.Transaction("expense", 10.0, "餐饮", "2026-09-01T12:00:00+08:00", "x"),
+    ])
+    rows = db.query_by_ledger(lid, "2026-09-01", "2026-09-30")
+    assert len(rows) == 1
+    assert "created_by_user_id" not in rows[0]
+    assert "openid" not in rows[0]
+    assert rows[0]["created_by_nickname"] == "小王"
+
+
+def test_no_blank_nickname_row_ever_persisted(iso):
+    """评审：昵称在 INSERT 前生成——表中永不出现空昵称行（唯一索引窗口期根除）。"""
+    import sqlite3
+    for i in range(5):
+        db.get_or_create_user(f"o_seq_{i}")
+        c = sqlite3.connect(str(db.DB_PATH))
+        n = c.execute("SELECT COUNT(*) FROM users WHERE nickname IS NULL OR nickname = ''").fetchone()[0]
+        c.close()
+        assert n == 0, "空昵称不得进表"
 
 def test_welcome_first_vs_returning(iso):
     import main
