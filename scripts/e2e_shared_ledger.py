@@ -158,6 +158,12 @@ ok, _ = db.approve_join("o_F", "小G")
 _fid, _ferr = db.resolve_ledger_selector("o_F", "F的账本")
 check("V14 前置: 小G 已是 F 账本的普通成员", ok and _ferr is None and db.is_ledger_admin("o_G", _fid) is False)
 check("V14 前置: F 仍有待审批申请（小E）", db.list_pending_joins("o_F") != [])
+# 关键前置：把小G 的【当前账本】切到 F 的账本——_pending_joins_hint 查的是当前账本，
+# 而加入别人的账本不会自动切换；不切的话它查的是小G 自己的「我的账本」（本来就没有待审批），
+# 权限判定被删掉这行断言照样通过（假绿）。
+_ok_sw, _sw_msg = db.switch_ledger("o_G", f"#{_fid}")
+check("V14 前置: 小G 当前账本=F 账本（且仍有待审批）",
+      _ok_sw and db.get_user_ledger_id("o_G") == _fid, f"({_sw_msg})")
 check("V14 非 owner 不提示（不泄露）", agent._pending_joins_hint("o_G") == "")
 
 # ── V15 T050: 已删账本可切进去看历史，且带"已删除"提示 ──

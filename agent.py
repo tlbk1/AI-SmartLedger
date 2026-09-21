@@ -154,7 +154,13 @@ def make_tools(openid: str) -> list:
         # FR-038（评审问题8）：申请提交后尽力推送通知 owner（主通道）。
         # 推送失败 _do_push_customer 自己会入 undelivered；生成阶段异常也入队（FR-039）。
         # 定位用【本次申请的账本 id】——查「最新一条 pending」会在用户先后申请多本账时送错 owner。
-        info = db.get_ledger_info(applied_lid) if applied_lid else None
+        # 取账本名在 try 内（FR-039：通知"生成阶段"的异常也不许静默丢）——它跑在调用线程上，
+        # 一旦抛出会带着"已提交的申请"一起逃出工具：通知既不发也不入队。
+        try:
+            info = db.get_ledger_info(applied_lid) if applied_lid else None
+        except Exception:
+            logging.getLogger(__name__).warning("取账本名失败，通知文案降级", exc_info=True)
+            info = None
         ledger_name = (info or {}).get("name") or "该账本"
         import threading
 
@@ -258,10 +264,15 @@ def make_tools(openid: str) -> list:
         # 不再依赖 owner 的当前账本。失败/异常入 undelivered（见 _notify）。
         # 文案在推送与补发两条路径必须一致：补发路径若拿不到账本名就**不提名字**，
         # 不能写死占位符冒充真实账本名（曾把真实名字替换成「账本」两字）。
-        info = db.get_ledger_info(lid)
-        ledger_name = (info or {}).get("name")
+        # 取账本名在 try 内（FR-039：审批已提交后，取数异常不得带着通知一起逃出工具）。
+        try:
+            info = db.get_ledger_info(lid)
+        except Exception:
+            logging.getLogger(__name__).warning("取账本名失败，通知文案降级", exc_info=True)
+            info = None
+        display_name = (info or {}).get("name")
         notice = (
-            f"「{ledger_name}」的管理员已同意你加入 🎉" if ledger_name
+            f"「{display_name}」的管理员已同意你加入 🎉" if display_name
             else "你申请的账本管理员已同意你加入 🎉"
         )
         import threading

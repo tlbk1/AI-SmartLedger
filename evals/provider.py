@@ -56,7 +56,9 @@ def _seed_reader(openid: str) -> None:
     now = datetime.now(SHANGHAI)
     rows = db.query_by_ledger(
         ledger_id,
-        now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat(),
+        # 守卫窗口起点从"本月 1 号"往前挪一天：种子里的「昨天」在每月 1 号会落进上个月，
+        # 只查本月会让守卫误判"没播过"→ 重复播种（本月支出 80 变 60，用例假失败且持续整月）。
+        (now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)).isoformat(),
         (now + timedelta(days=1)).isoformat(),
         limit=100,
     )

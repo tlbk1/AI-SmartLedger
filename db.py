@@ -530,24 +530,20 @@ def get_user_ledger_id(openid: str) -> Optional[int]:
     None（上层明确报错，绝不静默落进他人账本）。
     """
     with _connect() as conn:
-        row = conn.execute("""
-            SELECT u.current_ledger_id
-            FROM users u
-            WHERE u.openid = ?
-        """, (openid,)).fetchone()
-        if row and row["current_ledger_id"] is not None:
+        # 一次取全（id + 当前指针）：热路径不再把同一行 users 查三遍
+        row = conn.execute(
+            "SELECT id, current_ledger_id FROM users WHERE openid=?", (openid,)
+        ).fetchone()
+        if row is None:
+            return None
+        if row["current_ledger_id"] is not None:
             # 账本存在即返回（含已软删除——用户显式切入是为了看历史，只读）。
             # 仍要求成员关系成立：被移除/退出后失效的指针不得再读到该账本（账本隔离）。
             l = conn.execute("SELECT 1 FROM ledgers WHERE id=?", (row["current_ledger_id"],)).fetchone()
-            if l:
-                u0 = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
-                if u0 and _is_member_by_uid(conn, u0["id"], row["current_ledger_id"]):
-                    return row["current_ledger_id"]
+            if l and _is_member_by_uid(conn, row["id"], row["current_ledger_id"]):
+                return row["current_ledger_id"]
         # FR-035 兜底链：默认账本 → 最近加入的未删除账本 → None
-        u = conn.execute("SELECT id FROM users WHERE openid=?", (openid,)).fetchone()
-        if u is None:
-            return None
-        return _fallback_ledger_id(conn, u["id"])
+        return _fallback_ledger_id(conn, row["id"])
 
 
 def create_ledger(openid: str, name: str) -> tuple[bool, str]:
