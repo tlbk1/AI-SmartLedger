@@ -112,6 +112,8 @@ def _classify_and_route(state: GraphState) -> str:
             type_filter=params.type_filter,
             limit=params.limit,
         )
-        return llm.summarize_query_result(rows, content, now)
+        return llm.summarize_query_result(
+            rows, content, now, ledger_deleted=db.is_ledger_deleted(ledger_id)
+        )
     else:
         return llm.chat_reply(content, now)

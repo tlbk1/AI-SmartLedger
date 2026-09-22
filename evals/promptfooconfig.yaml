@@ -1,0 +1,104 @@
+# evals/promptfooconfig.yaml — AI-SmartLedger 端到端回复评测
+#
+# 每条用例通过 evals/provider.py 调用项目真实入口 graph.process_message()，
+# 断言对象是机器人最终回复（agent 循环 + 工具 + DB 全链路）。
+# 运行方式见同目录 README.md。
+
+description: AI-SmartLedger 机器人回复评测
+
+prompts:
+  - '{{message}}'
+
+providers:
+  - python://./provider.py
+
+# 用例串行执行：所有用例共用一个 sqlite 评测库，避免并发写冲突。
+# 注意：顶层 concurrency 键会被忽略，需在命令行加 --concurrency 1（见 README）。
+
+defaultTest:
+  timeout: 120000 # ReAct 循环要跑多轮 LLM 调用，给足时间
+  options:
+    # llm-rubric 打分模型：与被测 agent 同网关同模型（hw 网关 / deepseek-flash）。
+    # 注意：键名是 apiBaseUrl（baseURL 无效，会连到 OpenAI 官方域名被墙）；
+    # apiKeyEnvar 指向 .env 的 LLM_API_KEY（hw 网关的 key）。
+    provider:
+      id: openai:chat:deepseek-flash
+      config:
+        apiBaseUrl: https://ccc.hwprize.com/v1
+        apiKeyEnvar: LLM_API_KEY
+
+tests:
+  # ── 记账 ──
+  - description: 记账-单笔（含金额）
+    vars:
+      message: 午餐花了32块
+      openid: eval-writer-1
+    assert:
+      - type: regex
+        value: '已记|记好|记上|成功|✓|✅'
+
+  - description: 记账-一次多笔
+    vars:
+      message: 昨天打车15元，今天买咖啡22元
+      openid: eval-writer-2
+    assert:
+      - type: regex
+        value: '已记|记好|记上|成功|✓|✅'
+      - type: llm-rubric
+        value: 回复应表示已成功记录两笔账（打车 15 元、咖啡 22 元），而不是只记一笔或报错。
+
+  # ── 反问澄清 ──
+  - description: 记账-缺金额应反问
+    vars:
+      message: 记一笔晚饭
+      openid: eval-asker-1
+    assert:
+      - type: not-icontains
+        value: 已记
+      - type: llm-rubric
+        value: 回复应该向用户询问缺失的金额信息，而不是直接完成记账。
+
+  # ── 查账 ──
+  - description: 查询-本月支出合计（种子数据 30+50=80）
+    vars:
+      message: 这个月我花了多少钱
+      openid: eval-reader
+    assert:
+      - type: llm-rubric
+        value: 回复应给出本月支出合计约 80 元（午餐 30 元 + 电影 50 元），不应把 5000 元收入算进支出。
+
+  - description: 查询-分类查询（餐饮）
+    vars:
+      message: 查一下我的餐饮消费
+      openid: eval-reader
+    assert:
+      - type: icontains
+        value: '30'
+
+  - description: 查询-无记录
+    vars:
+      message: 上个月我花了多少钱
+      openid: eval-empty
+    assert:
+      - type: llm-rubric
+        value: 回复应说明上个月没有账目记录或查不到数据，不应编造金额。
+
+  # ── 账本管理 ──
+  - description: 建账本-返回邀请口令
+    vars:
+      message: 帮我建一个新账本，叫旅行账
+      openid: eval-creator
+    assert:
+      - type: regex
+        value: 口令
+
+  # ── 闲聊 ──
+  - description: 闲聊-不执行记账动作
+    vars:
+      message: 你好呀，你能帮我做什么？
+      openid: eval-chatter
+    assert:
+      - type: not-regex
+        value: '已记|查到.*条记录'
+      - type: llm-rubric
+        value: 回复应是友好的闲聊或能力介绍，不应产生记账或查账结果。

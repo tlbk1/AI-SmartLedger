@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import db
 import wechat
-from tools import QueryParams, query_transactions
+from tools import QueryParams
 
 # ──────────────────────────── 测试常量 ────────────────────────────
 
@@ -189,26 +189,33 @@ class TestQueryBoundary:
         )
         db.insert_many_for_ledger(ledger_id, uid, [txn])
 
-        # 查 8 月
-        rows = query_transactions(QueryParams(
-            date_from="2026-08-01",
-            date_to="2026-08-31",
-        ))
+        # 查 8 月（统一走账本隔离查询，constitution 原则 I）
+        rows = db.query_by_ledger(
+            ledger_id=ledger_id, date_from="2026-08-01", date_to="2026-08-31",
+        )
 
         # 应该包含 8/31 的记录
         amounts = [r["amount"] for r in rows]
         assert 99.0 in amounts, "8/31 当天的记录被 BETWEEN 丢了！"
 
-    def test_category_filter(self):
-        """分类过滤正常。"""
+    def test_category_filter(self, isolated_db):
+        """分类过滤正常（账本隔离查询路径）。"""
         db.init()
-        rows = query_transactions(QueryParams(
-            date_from="2026-01-01",
-            date_to="2026-12-31",
+        uid = db.get_or_create_user("o_test_filter")
+        ok, _ = db.create_ledger("o_test_filter", "过滤测试")
+        ledger_id = db.get_user_ledger_id("o_test_filter")
+        db.insert_many_for_ledger(ledger_id, uid, [
+            db.Transaction(type="expense", amount=10.0, category="餐饮",
+                           happened_at="2026-06-01T12:00:00+08:00"),
+            db.Transaction(type="expense", amount=20.0, category="交通",
+                           happened_at="2026-06-02T12:00:00+08:00"),
+        ])
+        rows = db.query_by_ledger(
+            ledger_id=ledger_id, date_from="2026-01-01", date_to="2026-12-31",
             category="餐饮",
-        ))
-        for r in rows:
-            assert r["category"] == "餐饮"
+        )
+        assert len(rows) == 1
+        assert rows[0]["category"] == "餐饮"
 
 
 # ──────────────────────────── pending 对话状态测试 ────────────────────────────
