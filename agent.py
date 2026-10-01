@@ -72,13 +72,25 @@ def make_tools(openid: str) -> list:
         date_to: str,
         category: Optional[str] = None,
         type_filter: Optional[str] = None,
-        limit: int = 20,
+        limit: int = 5,
+        order_by: str = "top_amount",
     ) -> str:
-        """查询账单记录（只读）。用当前用户所属账本查数据。
-        date_from/date_to 必填，格式 YYYY-MM-DD；分类和类型可选。返回 JSON 字符串。"""
+        """查询账单（只读），返回 JSON 信封：
+        - totals：按类型聚合的**完整**合计（支出/收入分开），**不受 limit 影响**——
+          回答"花了多少"类问题**必须**用 totals，**禁止**根据 records 自行求和；
+        - records：金额最大的 ≤limit 笔明细（带记账人昵称），**仅供浏览**——只列了部分，
+          与合计对不上是正常的；
+        - total_count：命中的总笔数；order_by：本次明细排序。
+        date_from/date_to 必填 YYYY-MM-DD；category/type_filter 可选。
+        order_by：top_amount=金额倒序（默认，用于核对合计）| recent=时间倒序（"最近买了啥"）。
+        limit 默认 5（上限 50）。"""
         ledger_id = db.get_user_ledger_id(openid)
         if ledger_id is None:
             return "你还没有加入任何账本，请先创建或加入一个账本。"
+        import json
+        limit = max(1, min(int(limit), 50))          # FR-006：钳制 [1,50]，防越界/撑爆上下文
+        if order_by not in ("recent", "top_amount"):
+            order_by = "top_amount"
         rows = db.query_by_ledger(
             ledger_id=ledger_id,
             date_from=date_from,
@@ -86,21 +98,28 @@ def make_tools(openid: str) -> list:
             category=category,
             type_filter=type_filter,
             limit=limit,
+            order_by=order_by,
         )
-        import json
-        # T050（FR-014）：当前账本已删除 → 明确提示用户（历史只读可查）
+        # FR-001/FR-008：合计来自 SQL 聚合（无 LIMIT），与上面截断的明细彻底解耦
+        totals = db.sum_by_ledger(
+            ledger_id, date_from, date_to, category=category, type_filter=type_filter,
+        )
+        payload: dict = {
+            "records": rows,
+            "totals": totals,
+            "total_count": totals["expense"]["count"] + totals["income"]["count"],
+            "order_by": order_by,
+        }
+        # T050（FR-014）/FR-008：已删账本 → **同一信封** + 只读标记（两种情形键结构一致）
         if db.is_ledger_deleted(ledger_id):
             info = db.get_ledger_info(ledger_id) or {"name": "该账本"}
-            return json.dumps(
-                {
-                    "ledger_deleted": True,
-                    "ledger_name": info["name"],
-                    "notice": f"⚠️ 账本「{info['name']}」已被删除，以下为历史账目（只读，不能再记账）。请在回复中明确提示用户。",
-                    "records": rows,
-                },
-                ensure_ascii=False,
+            payload["ledger_deleted"] = True
+            payload["ledger_name"] = info["name"]
+            payload["notice"] = (
+                f"⚠️ 账本「{info['name']}」已被删除，以下为历史账目（只读，不能再记账）。"
+                "请在回复中明确提示用户。"
             )
-        return json.dumps(rows, ensure_ascii=False)
+        return json.dumps(payload, ensure_ascii=False)
 
     @tool
     def record_transactions(transactions: list) -> str:
@@ -401,7 +420,7 @@ AGENT_SYSTEM_PROMPT = """\
 
 你有以下工具可用：
 - record_transactions(transactions): 记一笔或多笔账（支出/收入），自动记到当前账本
-- query_transactions(date_from, date_to, ...): 查询账单（只读），查当前账本所有成员的账（会显示是谁记的）
+- query_transactions(date_from, date_to, ..., order_by): 查询账单（只读）。返回 records（金额最大的 ≤5 笔明细，带记账人昵称）+ totals（按类型聚合的**完整**合计，支出/收入分开）+ total_count。**回答"花了多少"类问题必须引用 totals，禁止对 records 自行求和**；"最近买了啥"用 order_by='recent'
 - create_ledger(name): 创建账本，返回邀请口令（创建者自动成为该账本管理员）
 - join_ledger(invite_code): 凭口令【申请】加入别人的账本（审批制，需 owner 同意后才成为成员）
 - my_join_status(): 查看自己所有加入申请的状态（待审批/已通过）
@@ -424,7 +443,7 @@ AGENT_SYSTEM_PROMPT = """\
 
 工作方式（重要）：
 1. 用户说记账 → 用 record_transactions 记下，然后简单确认（回复时带上当前账本名）
-2. 用户说查账 → 用 query_transactions 查数据。**账本是共享的**：你能看到账本内所有成员记的账，每笔会带记账人昵称。总结时如涉及"谁记的"，可以提一下记账人
+2. 用户说查账 → 用 query_transactions 查数据。**账本是共享的**：你能看到账本内所有成员记的账，每笔会带记账人昵称。总结时如涉及"谁记的"，可以提一下记账人。**金额必须用工具返回的 totals（完整合计，不受明细条数影响）：支出与收入分开报、禁止相加；禁止把 records 里的金额自己加起来**（records 只是金额最大的几笔，与总计对不上是正常的）
 3. 用户说「建账本」/「创建账本」→ 用 create_ledger，账本名从他的话里提取；**没给名字先反问**（「新账本叫什么名字？」），不要用空名调用
 4. 用户说「加入账本 xxx」/收到口令 → 用 join_ledger **提交申请**（审批制）。告诉用户「已申请，等管理员同意」；**不要把申请说成"已加入"**
 5. 用户说「我有哪些账本」→ 用 get_my_ledgers；用户问「我的申请状态」→ 用 my_join_status

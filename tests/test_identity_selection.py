@@ -649,6 +649,11 @@ def test_llm_fallback_shows_nickname(iso, monkeypatch):
         "type": "expense", "amount": 32.0, "category": "餐饮",
         "happened_at": "2026-09-03T12:00:00+08:00", "created_by_nickname": "老板",
     }]
-    out = llm.summarize_query_result(rows, "上月花了多少", "2026-09-10T10:00:00+08:00")
+    totals = {"expense": {"count": 1, "total": 32.0},
+              "income": {"count": 1, "total": 5000.0}}
+    out = llm.summarize_query_result(rows, "上月花了多少", "2026-09-10T10:00:00+08:00",
+                                     totals=totals)
     assert "AI 总结暂时不可用" in out
     assert "老板" in out and "32.00" in out
+    # spec 004/FR-013：降级文案的合计来自 totals，收支分开（不再混加）
+    assert "支出 ¥32.00（1 笔）" in out and "收入 ¥5000.00（1 笔）" in out

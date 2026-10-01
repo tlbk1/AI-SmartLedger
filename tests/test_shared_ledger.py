@@ -504,13 +504,15 @@ def test_agent_query_tool_marks_deleted_ledger(iso):
 
 
 def test_summarize_deleted_empty_is_deterministic(iso):
-    """T050：已删账本 + 无记录 → 确定性文案（不调 LLM）。"""
+    """T050：已删账本 + 无记录 → 确定性文案（不调 LLM）。spec 004：totals 必填。"""
     import llm
+    zero = {"expense": {"count": 0, "total": 0.0}, "income": {"count": 0, "total": 0.0}}
     out = llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00",
-                                     ledger_deleted=True)
+                                     totals=zero, ledger_deleted=True)
     assert "已被删除" in out
     # 普通空结果保持原样
-    assert llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00") == "没有查到相关记录。"
+    assert llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00",
+                                      totals=zero) == "没有查到相关记录。"
 
 
 # ════════ T032/T033: US7 管理操作须明确指定账本 ════════

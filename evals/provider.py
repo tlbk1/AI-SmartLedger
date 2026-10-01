@@ -45,9 +45,10 @@ def _ensure_user(openid: str) -> None:
 def _seed_reader(openid: str) -> None:
     """给查询类用例播种固定流水（只播一次）。
 
-    播种内容（查询断言的依据）：
+    播种内容（查询断言的依据，**必须全部落在本月**——"本月支出≈80" 的 rubric 依赖它）：
     - 今天 12:00 午餐 餐饮 30 元（支出）
-    - 昨天 19:00 电影 娱乐 50 元（支出）
+    - 「昨天」19:00 电影 娱乐 50 元（支出）；**每月 1 号**昨天落进上个月，
+      会让本月支出只剩 30 → 改用本月 1 号 19:00，保证两条支出都在本月
     - 本月 1 号 09:00 发工资 收入 5000 元
     """
     ledger_id = db.get_user_ledger_id(openid)
@@ -65,14 +66,20 @@ def _seed_reader(openid: str) -> None:
     if len(rows) >= 3:
         return
     today = now.strftime("%Y-%m-%dT12:00:00+08:00")
-    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%dT19:00:00+08:00")
+    # 电影日期：正常取「昨天」；跨月（即每月 1 号）改用本月 1 号 19:00（同为本月内）
+    movie_dt = now - timedelta(days=1)
+    if (movie_dt.year, movie_dt.month) != (now.year, now.month):
+        movie_dt = now.replace(day=1, hour=19, minute=0, second=0, microsecond=0)
+    else:
+        movie_dt = movie_dt.replace(hour=19, minute=0, second=0, microsecond=0)
+    movie = movie_dt.strftime("%Y-%m-%dT%H:%M:%S+08:00")
     month_start = now.replace(day=1).strftime("%Y-%m-%dT09:00:00+08:00")
     db.insert_many_for_ledger(
         ledger_id,
         db.get_or_create_user(openid),
         [
             db.Transaction(type="expense", amount=30.0, category="餐饮", note="午餐", happened_at=today),
-            db.Transaction(type="expense", amount=50.0, category="娱乐", note="电影", happened_at=yesterday),
+            db.Transaction(type="expense", amount=50.0, category="娱乐", note="电影", happened_at=movie),
             db.Transaction(type="income", amount=5000.0, category="工资", note="发工资", happened_at=month_start),
         ],
     )
