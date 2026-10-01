@@ -145,7 +145,7 @@ def make_tools(openid: str) -> list:
                     amount=float(t["amount"]),
                     category=str(t.get("category", "其他")),
                     note=str(t.get("note", "")),
-                    happened_at=str(t.get("happened_at") or ""),
+                    happened_at=str(t.get("happened_at") or "").strip(),
                 )
             )
         ok = db.insert_many_for_ledger(ledger_id, user_id, txns)

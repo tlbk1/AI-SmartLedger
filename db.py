@@ -761,7 +761,11 @@ def insert_many_for_ledger(ledger_id: int, created_by_user_id: int, txns: list[T
                 conn.execute(
                     "INSERT INTO transactions (type, amount, category, note, happened_at, created_at, ledger_id, created_by_user_id) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (t.type, t.amount, t.category, t.note or "", t.happened_at,
+                    (t.type, t.amount, t.category, t.note or "",
+                     # happened_at 兜底 now：LLM 不传时间 = "现在"。绝不能落空串——
+                     # 空串账目会从一切查询窗口消失（isodate 比较永远为 False），
+                     # 而工具回复仍称"已记"→ 静默丢数据（created_at 同行已有 or now 兜底，对齐）
+                     t.happened_at or now,
                      t.created_at or now, ledger_id, created_by_user_id),
                 )
         return True

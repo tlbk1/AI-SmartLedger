@@ -209,3 +209,53 @@ def test_totals_param_is_required(iso):
     import llm
     with pytest.raises(TypeError):
         llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00")
+
+
+# ════════ happened_at 缺省兜底（评审：静默丢数据）════════
+
+def test_record_without_happened_at_defaults_to_now(iso):
+    """不传 happened_at → 落库为当前时间，绝不能是空串（空串=从一切查询窗口消失，
+    但工具回复仍称"已记"——假成功）。created_at 在 db 层有 or now 兜底，happened_at 对齐。"""
+    import agent, json
+    db.get_or_create_user("o_nots")
+    tools = {t.name: t for t in agent.make_tools("o_nots")}
+    out = tools["record_transactions"].invoke(
+        {"transactions": [{"type": "expense", "amount": 32.0, "category": "餐饮"}]}
+    )
+    assert "已记" in out
+    lid = db.get_user_ledger_id("o_nots")
+    rows = db.query_by_ledger(lid, "2020-01-01", "2040-12-31", limit=50)
+    assert len(rows) == 1, "缺省时间的账目必须可查（落到当前时间）"
+    assert rows[0]["happened_at"] != "" and "T" in rows[0]["happened_at"]
+
+
+def test_record_with_explicit_happened_at_kept(iso):
+    """显式传时间不被覆盖（兜底只作用于缺省/空白）。"""
+    import agent
+    db.get_or_create_user("o_exp")
+    tools = {t.name: t for t in agent.make_tools("o_exp")}
+    tools["record_transactions"].invoke(
+        {"transactions": [{"type": "expense", "amount": 50.0, "category": "娱乐",
+                           "happened_at": "2026-08-31T19:00:00+08:00"}]}
+    )
+    lid = db.get_user_ledger_id("o_exp")
+    rows = db.query_by_ledger(lid, "2026-08-31", "2026-08-31", limit=10)
+    assert len(rows) == 1 and rows[0]["happened_at"].startswith("2026-08-31")
+
+
+def test_record_blank_happened_at_also_defaulted(iso):
+    """LLM 传了空白字符串/None 也要兜底（等价于没传）。"""
+    import agent
+    db.get_or_create_user("o_blank")
+    tools = {t.name: t for t in agent.make_tools("o_blank")}
+    out = tools["record_transactions"].invoke(
+        {"transactions": [
+            {"type": "expense", "amount": 1.0, "category": "其他", "happened_at": "  "},
+            {"type": "expense", "amount": 2.0, "category": "其他", "happened_at": None},
+        ]}
+    )
+    assert "已记 2 笔" in out
+    lid = db.get_user_ledger_id("o_blank")
+    rows = db.query_by_ledger(lid, "2020-01-01", "2040-12-31", limit=10)
+    assert len(rows) == 2, "空白时间的账目不得静默丢失"
+    assert all(r["happened_at"] for r in rows)
