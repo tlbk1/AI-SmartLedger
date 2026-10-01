@@ -112,6 +112,18 @@ def _classify_and_route(state: GraphState) -> str:
             type_filter=params.type_filter,
             limit=params.limit,
         )
-        return llm.summarize_query_result(rows, content, now)
+        # spec 004/FR-012：兜底路径与主路径同口径——合计必须来自 SQL 聚合（无截断），
+        # 不得像从前那样按返回的 rows 心算（rows 受 limit 截断，且会混加收入支出）
+        totals = db.sum_by_ledger(
+            ledger_id,
+            params.date_from,
+            params.date_to,
+            category=params.category,
+            type_filter=params.type_filter,
+        )
+        return llm.summarize_query_result(
+            rows, content, now, totals=totals,
+            ledger_deleted=db.is_ledger_deleted(ledger_id),
+        )
     else:
         return llm.chat_reply(content, now)

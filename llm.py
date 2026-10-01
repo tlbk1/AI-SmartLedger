@@ -307,24 +307,52 @@ def extract_query_params(content: str, now_str: str) -> Optional[QueryParams]:
 
 # ──────────────────────────── ④ 查询结果总结 ────────────────────────────
 
-def summarize_query_result(rows: list[dict], original_question: str, now_str: str) -> str:
+def summarize_query_result(
+    rows: list[dict],
+    original_question: str,
+    now_str: str,
+    totals: dict,
+    ledger_deleted: bool = False,
+) -> str:
     """
-    把 SQL 查询结果 + 用户原问题喂给 LLM，总结成自然语言。
+    把查询明细 + **SQL 聚合合计** + 用户原问题喂给 LLM，总结成自然语言。
+
+    FR-010（spec 004）：合计**必须**来自 totals（SQL 聚合，无截断）——禁止从 rows 心算
+    （rows 受 limit 截断，且收入/支出必须分开）。totals 为必填参数（防呆：漏传即报错，
+    不会悄悄退回心算）。
+    T050（FR-014）：ledger_deleted=True 时，明确提示"该账本已被删除（历史只读）"。
     """
-    if not rows:
+    # T050：已删账本的提示语（两种分支都要带）
+    deleted_note = (
+        "\n【重要】该账本**已被删除**，以下是历史账目（只读，不能再记账）。"
+        "请在回复开头或结尾明确提示用户「该账本已被删除」。"
+    ) if ledger_deleted else ""
+
+    exp = totals.get("expense") or {"count": 0, "total": 0.0}
+    inc = totals.get("income") or {"count": 0, "total": 0.0}
+    total_count = exp["count"] + inc["count"]
+
+    if total_count == 0:
+        if ledger_deleted:
+            return "该账本已被删除，且没有查到相关历史记录。"
         return "没有查到相关记录。"
 
     client = _get_client()
 
-    # 计算汇总
-    total = sum(r["amount"] for r in rows)
     summary_prompt = (
         f"用户问了：「{original_question}」\n"
-        f"查询到 {len(rows)} 条记录，总金额 ¥{total:.2f}。\n"
-        f"明细：\n{json.dumps(rows, ensure_ascii=False, indent=2)}\n\n"
-        "请用简洁的中文总结这些数据，给用户一个易读的回复。"
-        "格式参考：「本月餐饮支出 ¥820，共 12 笔」\n"
-        "如果记录较多，列前几条明细 + 汇总。"
+        f"聚合合计（**完整**，不受明细条数影响）：共 {total_count} 笔——"
+        f"支出 ¥{exp['total']:.2f}（{exp['count']} 笔）、收入 ¥{inc['total']:.2f}（{inc['count']} 笔）。\n"
+        f"明细（最多 {len(rows)} 笔，**仅供浏览**；只列了部分，与合计对不上是正常的）：\n"
+        f"{json.dumps(rows, ensure_ascii=False, indent=2)}\n\n"
+        "请用简洁的中文总结这些数据，给用户一个易读的回复。\n"
+        "**支出与收入必须分开表述，禁止相加成一个数字**；"
+        "**金额类结论必须引用上面的聚合合计，禁止根据明细自行求和**。\n"
+        "格式参考：「本月支出 ¥820（12 笔），收入 ¥5,000（1 笔）」\n"
+        "这是【共享账本】，明细里每条可能带 created_by_nickname（记账人昵称）："
+        "如果用户问「谁记的/谁花的」，或不同记录是不同人记的，请在总结里点出记账人；"
+        "否则不必逐条标注。"
+        f"{deleted_note}"
     )
 
     try:
@@ -339,8 +367,19 @@ def summarize_query_result(rows: list[dict], original_question: str, now_str: st
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning("查询结果总结失败: %s", e)
-        # 降级：返回原始数据
-        return f"查到 {len(rows)} 条记录，总金额 ¥{total:.2f}。（AI 总结暂时不可用）"
+        # FR-013/SC-006 + FR-032：降级文案合计用 totals（收支分开），明细逐条带记账人昵称
+        lines = []
+        for r in rows[:10]:
+            who = (r.get("created_by_nickname") or "").strip() or "未知"
+            sign = "-" if r.get("type") == "expense" else "+"
+            day = (r.get("happened_at") or "")[:10]
+            lines.append(f"· {day} {r.get('category', '其他')} {sign}¥{abs(r['amount']):.2f}（{who}）")
+        more = f"\n…另有 {len(rows) - 10} 条明细未列" if len(rows) > 10 else ""
+        return (
+            f"查到 {total_count} 笔（AI 总结暂时不可用）——"
+            f"支出 ¥{exp['total']:.2f}（{exp['count']} 笔）、收入 ¥{inc['total']:.2f}（{inc['count']} 笔）\n"
+            + "\n".join(lines) + more
+        )
 
 
 # ──────────────────────────── ⑤ 兜底闲聊 ────────────────────────────

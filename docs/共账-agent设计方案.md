@@ -173,3 +173,104 @@ def query(ledger_id, date_from, date_to, ...):
 2. **agent.py**：新增 3 个账本工具 + 改造现有工具加 openid
 3. **prompt**：更新系统提示，教 agent 用账本工具
 4. 测试：建账本 / 加入 / 记账隔离 / 查账隔离
+
+---
+
+## 九、当前实现（spec 002-shared-ledger 定稿）
+
+> ⚠️ 本章记录**已实现**的设计，**取代**第四节（口令直接加入）与第七节（待确认问题）的早期表述。
+
+### 9.1 加入流程：审批制（口令申请 → owner 同意）
+
+早期设计是"凭口令直接成为 member"。**当前实现改为审批制**（`constitution VII`）：
+
+```
+① 申请人：发口令       → apply_join()      → join_requests 落一条 pending（幂等 UNIQUE）
+② 系统  ：尽力推送 owner（48h 窗口内；失败静默跳过，不阻塞）
+③ owner ：任何一次对话  → 系统自动检查并顺带提示「有 N 条待审批」（兜底保底）
+④ owner ：「同意 小王」  → approve_join()   → pending→approved + 写 ledger_members
+⑤ 系统  ：尽力推送申请人「已加入」（失败入 undelivered，下次对话补发）
+```
+
+关键约束：
+- **审批前申请人看不到账本任何数据**（`is_ledger_member` 为假，查账走不到该账本）。
+- 重复申请**幂等**（`join_requests` 上 `UNIQUE(ledger_id, user_id)`）。
+- 本版**只做"同意"**，不做"拒绝"（`rejected` 为预留状态值，YAGNI）。
+- 被移除者**可以重新申请**（不复用旧的 approved 记录判定"已是成员"）。
+
+### 9.2 两级权限：owner vs member
+
+| 操作 | owner | member |
+|---|---|---|
+| 记账 / 查账 / 看成员列表 / 设昵称 / 切账本 | ✅ | ✅ |
+| 审批加入 / 移除成员 / 改账本名 / 删账本 / 重置口令 | ✅ | ❌（工具层拒绝） |
+| 退出账本 | ❌（只能删账本，单 owner 模型） | ✅ |
+
+**权限按"目标账本内的角色"判定**（`is_ledger_admin(openid, ledger_id)`）——
+X 在 L1 是 owner、在 L2 是 member，则 X 对 L2 的管理操作**被拒**（修掉了早期"按当前账本误判"的缺陷）。
+
+### 9.3 共享账目 + 记账人展示
+
+- 账本是**共享**的：任一成员查账能看到**该账本全部账目**（含他人记的）。
+- `query_by_ledger` 用 `LEFT JOIN users` 附上 `created_by_nickname`（**绝不返回 openid**）。
+- 摘要（`summarize_query_result`）在涉及"谁记的"时点出记账人昵称。
+- 默认昵称**创建用户时即刻生成**（「账本成员 + 4位 hex」，账本内校验唯一），保证 owner 看待审批列表时申请人有名字可按名同意。
+
+### 9.4 成员变更：移除 / 退出（历史账目保留）
+
+- 移除（`admin_remove_member`）/ 退出（`leave_ledger`）只删 `ledger_members` 关系行，
+  **不动 `transactions`**——被移除者的历史账目仍留在账本内、归属不变。
+- 被移除/退出者 `current_ledger_id` **回落到其默认账本**（否则会"悬空指向"原账本，形成隔离泄漏）。
+- owner **不可被移除、不可退出**（单 owner 模型）。
+
+### 9.5 口令重置
+
+`reset_invite_code(openid, ledger_id=None)`：生成新口令 → 旧口令立即失效 →
+该账本**所有 pending 申请置 `expired`**（作废），不再出现在待审批列表。
+
+### 9.6 删账本（软删除）与"已删账本只读"
+
+- 删账本 = **软删除**（`ledgers.deleted_at`），账目一条不删。
+- 删除时：该账本所有成员的 `current_ledger_id` **回落各自默认账本**。
+- **已删账本仍可查看历史**：仍在"我的账本"列表里（标记 `已删除`）、可切进去（只读），
+  查账结果带 `ledger_deleted` 标记 + 「该账本已被删除」提示。
+- **只读**：向已删账本记账在**工具层**（友好拒绝）和 **db 层**（`insert_many_for_ledger` 拦截）双重拒绝。
+- 已删账本的口令**失效**（不能用旧口令申请）。
+
+### 9.7 通知策略：尽力而为 + 兜底保底
+
+微信客服消息**只能发给 48 小时内互动过的用户**，所以推送不可靠：
+
+- 推送一律 **try + 失败入 `undelivered`**，绝不阻塞主回复（丢后台线程）。
+- **兜底**：owner 每次对话，`run_agent` 自动检查待审批并注入提示，让 agent 顺带提一句
+  （`agent._pending_joins_hint`）——不依赖 owner 主动查询。
+
+### 9.8 安全与一致性要点（实现细节）
+
+- **openid 走工具工厂闭包**：`make_tools(openid)`，LLM 的工具 schema 里**没有 openid**（防 prompt injection 冒充身份）。
+- **幂等建表/加列**：`init()` 用 `_add_column_if_missing`，升级不炸老库。
+- **防孤儿数据**：`ledger_id` 为 NULL 的写入被拒（`insert_many_for_ledger`）。
+- **UNIQUE 约束**：`join_requests(ledger_id, user_id)` 保证申请幂等。
+
+### 9.9 验证
+
+| 验证 | 结果 |
+|---|---|
+| 单元/集成测试（`pytest tests/ -q`） | **56 passed** |
+| 端到端场景（`scripts/e2e_shared_ledger.py` V1–V16） | **16/16 通过** |
+| `hermes verify`（bootstrap / test / readiness） | **三阶段全绿** |
+
+自动化验证入口：
+
+```bash
+PYTHONPATH= .venv/Scripts/python.exe -m pytest tests/ -q
+PYTHONPATH= .venv/Scripts/python.exe scripts/e2e_shared_ledger.py
+```
+
+### 9.10 与早期章节的差异
+
+| 早期表述 | 当前实现 |
+|---|---|
+| 第四节：`join_ledger` 凭口令**直接加入** | 改为**申请**（pending），owner 同意后才成为 member |
+| 第三节：工具签名带 `openid` 参数 | 改为**闭包注入**（`make_tools(openid)`），schema 无 openid |
+| 第七节：待确认问题 | 已定：多账本→默认账本+显式切换；口令→6 位字母数字随机；旧 NULL 数据→已清理 |

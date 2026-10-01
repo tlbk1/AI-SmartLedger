@@ -1,19 +1,18 @@
 """
-tools.py — 查询工具（NL2SQL 安全核心）
+tools.py — 查询参数 schema（NL2SQL 安全）
 
-这是 LLM 唯一能"操作数据库"的入口。安全全在这里。
+QueryParams / TOOL_SCHEMA 供 llm.py 的兜底查询参数抽取使用。
+实际查询统一走 db.query_by_ledger（账本隔离，见 constitution 原则 I）；
+旧的免账本查询入口（tools.query_transactions / db.query）已按 spec 003 FR-037 移除。
 
 设计依据：
 - 需求文档 14.4: LLM 永远不写 SQL 字符串，只产出结构化参数；
-                  代码侧用参数化查询拼 SQL，天然免疫注入；
-                  工具只读，仅 SELECT，代码里不存在 DELETE/UPDATE 路径。
+                  代码侧用参数化查询拼 SQL，天然免疫注入。
 - 审查错误 2: 日期边界补全，避开 BETWEEN，用半开区间 >= 和 <。
 """
 
 from dataclasses import dataclass
 from typing import Optional
-
-from db import query as db_query
 
 
 @dataclass
@@ -27,9 +26,6 @@ class QueryParams:
 
 
 # ──────────────────────────── 工具 schema（暴露给 LLM） ────────────────────────────
-
-# 这个 schema 以 OpenAI function/tool 格式暴露给 LLM，
-# LLM 只能产出符合这个 schema 的参数，永远无法直接写 SQL。
 
 TOOL_SCHEMA = {
     "type": "function",
@@ -69,20 +65,3 @@ TOOL_SCHEMA = {
         },
     },
 }
-
-
-# ──────────────────────────── 工具实现 ────────────────────────────
-
-def query_transactions(params: QueryParams) -> list[dict]:
-    """
-    执行查询。代码侧参数化拼 SQL，LLM 无法注入。
-
-    日期边界补全在 db.query 里做（半开区间，不丢最后一天）。
-    """
-    return db_query(
-        date_from=params.date_from,
-        date_to=params.date_to,
-        category=params.category,
-        type_filter=params.type_filter,
-        limit=params.limit,
-    )

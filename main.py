@@ -51,6 +51,34 @@ def _do_push_customer(openid: str, text: str):
         logger.exception("客服消息推送异常: openid=%s", openid)
 
 
+def _build_welcome(openid: str) -> str:
+    """spec 003 US1：关注/再关注的欢迎语（FR-001 定要素、措辞可调）。
+
+    - FR-002：关注事件即初始化身份与默认账本（get_or_create_user 幂等）
+    - FR-001 五要素：记账示例 / 建账本分享 / 凭口令申请 / 设置称呼 / 当前处于默认账本
+    - FR-005：再关注区分"欢迎回来"并可附当前账本概况
+    """
+    existed = db.user_exists(openid)
+    db.get_or_create_user(openid)
+    lid = db.get_user_ledger_id(openid)
+    info = db.get_ledger_info(lid) if lid else None
+    if info:
+        cur = f"「{info['name']}」（#{info['id']}）"
+        if info["is_deleted"]:
+            cur += "（已删除·只读）"
+    else:
+        cur = "（尚未有账本）"
+    if existed:
+        return f"👋 欢迎回来！你当前在账本 {cur}，随时继续记账。"
+    return (
+        "👋 欢迎使用记账助手！\n"
+        f"· 你现在在自己的默认账本 {cur} 里，直接说「午饭 35」就能记一笔\n"
+        "· 说「建账本 家用」可创建共享账本，把口令发给家人朋友\n"
+        "· 拿到别人的口令？发给我即可申请加入（等对方同意）\n"
+        "· 先给自己起个称呼吧，说「我叫小王」"
+    )
+
+
 # ──────────────────────────── FastAPI lifespan ────────────────────────────
 
 @asynccontextmanager
@@ -113,15 +141,21 @@ async def wechat_message(request: Request):
         logger.warning("XML 解析失败")
         return PlainTextResponse("")
 
-    # ── 事件消息闸门（审查遗漏 1）──
+    # ── 事件消息闸门（审查遗漏 1 + spec 003 US1）──
     if msg.msg_type != "text":
         if msg.msg_type == "event" and msg.event == "subscribe":
             logger.info("用户关注: %s", msg.from_user)
-            reply = "👋 欢迎关注！直接发消息就能记账，比如「午饭35」"
+            # FR-002/FR-005：初始化身份（幂等）+ 首关/回来差异化欢迎语
+            reply = _build_welcome(openid=msg.from_user)
             return Response(
                 content=wechat.build_text_reply(msg.from_user, msg.to_user, reply),
                 media_type="application/xml",
             )
+        if msg.msg_type == "event" and msg.event == "unsubscribe":
+            # FR-003/FR-004：取关不做任何数据变更（数据/成员关系全保留，
+            # 其为 owner 的账本照常可用）；平台限制下也无从推送
+            logger.info("用户取关（数据保留）: %s", msg.from_user)
+            return PlainTextResponse("")
         # 其他事件类型 / 图片语音等 → 回空串
         return PlainTextResponse("")
 

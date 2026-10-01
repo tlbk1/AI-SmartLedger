@@ -116,16 +116,17 @@ def build_text_reply(to_user_openid: str, from_user_account: str, text: str) -> 
 
 # ──────────────────────────── access_token 管理（需求 14.8） ────────────────────────────
 
-_token_cache: dict = {"token": "", "expires_at": 0.0}  # 内存缓存
+_token_cache: dict = {"token": "", "expires_at": 0.0}  # 内存缓存（expires_at 为单调时钟）
 
 
 def get_access_token() -> str:
     """
     获取 access_token，过期前 5 分钟懒刷新。
     有效期 7200 秒，每日获取上限约 2000 次，不能每次请求都去取。
+    过期判断用 time.monotonic（spec 003 范围外小改：系统改钟/ntp 校时不误判）。
     """
     # 大多数情况直接命中缓存
-    if _token_cache["token"] and time.time() < _token_cache["expires_at"] - 300:
+    if _token_cache["token"] and time.monotonic() < _token_cache["expires_at"] - 300:
         return _token_cache["token"]
 
     # 缓存过期或即将过期，重新获取
@@ -144,7 +145,7 @@ def get_access_token() -> str:
 
     if "access_token" in data:
         _token_cache["token"] = data["access_token"]
-        _token_cache["expires_at"] = time.time() + data.get("expires_in", 7200)
+        _token_cache["expires_at"] = time.monotonic() + data.get("expires_in", 7200)
         logger.info("access_token 已刷新，有效期 %ss", data.get("expires_in", 7200))
         return data["access_token"]
     else:
