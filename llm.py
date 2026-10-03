@@ -24,7 +24,60 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from tools import TOOL_SCHEMA, QueryParams
+# QueryParams / TOOL_SCHEMA 定义在本文件（spec 005：tools.py 退役，
+# 兜底查询的参数抽取是 llm 的职责）
+
+@dataclass
+class QueryParams:
+    """LLM 产出的结构化查询参数——工具 schema 只收这些。"""
+    date_from: str               # ISO 日期 'YYYY-MM-DD'，必填
+    date_to: str                 # ISO 日期 'YYYY-MM-DD'，必填
+    category: Optional[str] = None  # 餐饮/交通/...；None = 不限
+    type_filter: Optional[str] = None  # expense / income；None = 不限
+    limit: int = 20              # 最多返回条数
+
+
+# ──────────────────────────── 工具 schema（暴露给 LLM） ────────────────────────────
+
+TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "query_transactions",
+        "description": (
+            "查询用户的账单记录。只能查（只读），不能修改/删除。"
+            "时间范围必填；分类和类型可选。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date_from": {
+                    "type": "string",
+                    "description": "查询起始日期，格式 YYYY-MM-DD，如 2026-08-01",
+                },
+                "date_to": {
+                    "type": "string",
+                    "description": "查询结束日期，格式 YYYY-MM-DD，如 2026-08-31",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "分类名（可选），如：餐饮、交通、购物、居住、娱乐、医疗、其他、工资、外快",
+                },
+                "type_filter": {
+                    "type": "string",
+                    "enum": ["expense", "income"],
+                    "description": "类型（可选）：expense=支出，income=收入",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "最多返回条数，默认20",
+                    "default": 20,
+                },
+            },
+            "required": ["date_from", "date_to"],
+        },
+    },
+}
+
 
 # 与 wechat.py 同理：模块级就要读到 .env 里的 LLM_API_KEY / LLM_MODEL，
 # 否则被其他模块先 import 时 os.environ 为空，直接 KeyError。

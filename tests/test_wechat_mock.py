@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import db
 import wechat
-from tools import QueryParams
+from llm import QueryParams
 
 # ──────────────────────────── 测试常量 ────────────────────────────
 

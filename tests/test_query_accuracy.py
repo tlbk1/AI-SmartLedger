@@ -179,7 +179,7 @@ def test_tool_deleted_ledger_same_envelope(iso):
 def test_graph_fallback_passes_sql_totals(iso, monkeypatch):
     """FR-012：agent 失败走兜底路由时，总结必须拿到 SQL 聚合的 totals（不再心算）。"""
     import graph, llm
-    from tools import QueryParams
+    from llm import QueryParams
     openid, lid = _seed_25_expense("o_fb")
     uid = db.get_or_create_user(openid)
     db.insert_many_for_ledger(lid, uid, [
