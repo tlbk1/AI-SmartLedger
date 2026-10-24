@@ -1,7 +1,7 @@
 {
   "workflow_version": 2,
   "project_kind": "legacy",
-  "phase": "ready-to-archive",
+  "phase": "implementing",
   "active_change": {
     "slug": "006-agent-layers",
     "type": "refactor",
@@ -25,8 +25,8 @@
     "plan": {
       "valid": true,
       "digest": "0c3d3ff161328d8291718cbcc2d36cb513de6741d8a2647698714c39e23d1c19",
-      "approved_at": "2026-10-25T01:44:57+08:00",
-      "head_before": "8b86ede17bd5b5960aa4a0ab01189db3e31f8b2a"
+      "approved_at": "2026-10-25T01:47:23+08:00",
+      "head_before": "d62a17caf36c3d7570580a48674c7bff430fcb1e"
     },
     "hotfix": {
       "valid": false,

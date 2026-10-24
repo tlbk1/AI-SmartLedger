@@ -1,6 +1,6 @@
 # Wu5 Dev Flow 状态
 
-- 阶段：`ready-to-archive`
+- 阶段：`implementing`
 - 项目类型：`legacy`
 - 当前分支：`refactor/006-agent-layers`
 - 活动变更：`006-agent-layers`
