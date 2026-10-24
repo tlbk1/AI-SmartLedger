@@ -115,3 +115,41 @@
 - 范围：`affected`
 - `pytest`：exit `0`，通过
 - `pyright`：exit `0`，通过
+
+## evals 与 ocr 评审记录（T6 补全，2026-10-25）
+
+### evals（promptfoo，8 场景，hw 网关真实 LLM）
+
+- [x] 三轮实测：7/8 → **8/8** → **8/8**（--no-cache）。首轮单例失败复跑即过，定性为评分模型侧波动（deepseek-flash 输出非确定性），非代码回归；按 flaky 纪律三轮取二全绿记录。
+- 环境备注：本会话 python 出站一度被 WinError 10013 阻断，维护者解除后本会话直接完成，无需再人工执行。
+- [x] evals 8/8 达成。
+
+### 缺陷评审（open-code-review v1.13.3，外部模型 deepseek-flash，范围 a6e91f2..HEAD 代码文件）
+
+- 会话：65a63a0b-9258-4352-aa1f-9f0034979e94（3 跑：首发 27→续跑 27→补跑同 27/30 条目；tools/__init__ 组过滤请求网关 400 三次，该组由独立子代理复审覆盖——17/17 组装、ask_clarify、无名称冲突、admin/ledgers 搬运 AST 级保真已核）。用量约 1.3M tokens（hw 网关）。
+- 分级：critical 0 / high 2 / medium 2 / low 5。
+- 采纳：无（未获「评审并修复」授权，且 high/medium 均为基线既有行为）。
+- 驳回/豁免（引规格或测试）：
+  - [high] transactions 工具对 LLM 畸形入参不校验（非 dict/缺 amount/空列表「已记 0 笔」）——**书面豁免**：基线逐字搬运（git show a6e91f2:agent.py 同码），修复属行为变化，超出本变更「行为零变化」规格；失败路径由哨兵→兜底链兜住（router._dispatch_fallback），不崩溃不写脏账（003 方案B 已收敛写路径）。→ 转 fix 变更候选 F-a（ocr 已给建议代码）。
+  - [high] fallback_agent 删除死代码疑留引用——**驳回（误报）**：删除前 grep 核查 SHANGHAI/time/datetime/ZoneInfo 零使用，删除后 117 + e2e 16/16 + evals 8/8 + import 冒烟全绿，引用不存在。
+  - [medium] common.resolve_admin_ledger 对无账本用户返回 (None, None) 透传 db 层——**书面豁免**：基线 _resolve_admin_ledger 同码（agent.py:250-256）；同上转 fix 候选 F-b。
+  - [medium] react_agent 回复提取仅滤 tool 消息，可能回退取到历史消息——**书面豁免**：基线同码（agent.py:480-485），兜底语义未变；转 fix 候选 F-c。
+  - [low] router 绝对自导入——与独立复审 F2 收敛（两个独立镜头同报），**待维护者定夺**（一行等价修改，需授权）。
+  - [low] core/llm gateway 与 config 对 LLM_MODEL 双重解析——记录：与基线表达式逐字等价，可随 F2 一批收敛（model=DEFAULT_MODEL）。
+  - [low] 闭包内局部 import threading/json、__import__("datetime") 内联——**驳回**：基线同构，逐字搬运纪律优先。
+  - [low] ledgers show 参数必填（模型漏传则工具失败）与 name.strip() 文案——**驳回**：基线设计（AGENT_SYSTEM_PROMPT 明确指导「show 填 'y'」；文案行为基线一致）。
+- [x] 缺陷评审（open-code-review，critical/high 已处置：0 critical；2 high 豁免或驳回，理由如上）
+- 转正式审查/另建变更：F-a（入参校验）、F-b（admin lid=None 判空）、F-c（回复提取边界）+ 既有债务候选①（网关默认值）。
+
+### 收尾清单更新
+
+- [x] evals 8/8（本会话完成）
+- [x] ocr 缺陷评审（本会话完成，记录如上）
+- [ ] F2（router 相对导入）及 fix 候选批次取舍——待维护者
+- [ ] 归档 + push/PR——待维护者明确授权（push 走 api.github.com）
+
+### 自动验证 2026-10-25T03:09:55+08:00
+
+- 范围：`affected`
+- `pytest`：exit `0`，通过
+- `pyright`：exit `0`，通过
