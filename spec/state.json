@@ -1,7 +1,7 @@
 {
   "workflow_version": 2,
   "project_kind": "legacy",
-  "phase": "implementing",
+  "phase": "ready-to-archive",
   "active_change": {
     "slug": "006-agent-layers",
     "type": "refactor",
@@ -40,7 +40,35 @@
       "approved_at": "2026-10-25T01:39:00+08:00"
     }
   ],
-  "verification": null,
+  "verification": {
+    "scope": "full",
+    "passed": true,
+    "verified_at": "2026-10-25T01:46:36+08:00",
+    "fingerprint": "2d6d95c13e22b401043be456ad9de2c0975174f7cb06c71a01bc1625693acfe3",
+    "head": "6ba417e7ccbb83b5812a35b0e15b44486c39a2b6",
+    "results": [
+      {
+        "name": "pytest",
+        "command": [
+          ".venv/Scripts/python.exe",
+          "-m",
+          "pytest"
+        ],
+        "exit_code": 0,
+        "passed": true,
+        "summary": "============================= test session starts =============================\nplatform win32 -- Python 3.11.3, pytest-9.1.1, pluggy-1.6.0\nrootdir: E:\\360MoveData\\Users\\www\\Desktop\\AI-SmartLedger\nplugins: anyio-4.14.2, langsmith-0.10.18\ncollected 117 items\n\ntests\\test_identity_selection.py ....................................... [ 33%]\n...                                                                      [ 35%]\ntests\\test_query_accuracy.py ..............                              [ 47%]\ntests\\test_shared_ledger.py ......................................       [ 80%]\ntests\\test_wechat_mock.py .......................                        [100%]\n\n============================= 117 passed in 7.48s ============================="
+      },
+      {
+        "name": "pyright",
+        "command": [
+          ".venv/Scripts/pyright.exe"
+        ],
+        "exit_code": 0,
+        "passed": true,
+        "summary": "0 errors, 0 warnings, 0 informations\nFile or directory \"e:\\360MoveData\\Users\\www\\Desktop\\AI-SmartLedger\\ai_smartledger\" does not exist."
+      }
+    ]
+  },
   "task_progress": [],
   "last_completed": null
 }

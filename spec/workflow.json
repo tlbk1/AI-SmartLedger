@@ -9,7 +9,7 @@
     {
       "name": "pytest",
       "command": [
-        "python",
+        ".venv/Scripts/python.exe",
         "-m",
         "pytest"
       ],
@@ -19,7 +19,7 @@
     {
       "name": "pyright",
       "command": [
-        "pyright"
+        ".venv/Scripts/pyright.exe"
       ],
       "required": true,
       "enabled": true

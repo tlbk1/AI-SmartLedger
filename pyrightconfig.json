@@ -1,0 +1,7 @@
+{
+  "typeCheckingMode": "off",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["ai_smartledger", "tests", "evals", "scripts"],
+  "exclude": ["docs", ".venv", "**/__pycache__"]
+}
