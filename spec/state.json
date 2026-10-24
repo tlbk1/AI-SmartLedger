@@ -1,7 +1,7 @@
 {
   "workflow_version": 2,
   "project_kind": "legacy",
-  "phase": "drafting-plan",
+  "phase": "implementing",
   "active_change": {
     "slug": "006-agent-layers",
     "type": "refactor",
@@ -23,9 +23,10 @@
       "head_before": "7c8d1dfb696db25835814756065a4176c746306b"
     },
     "plan": {
-      "valid": false,
-      "digest": null,
-      "approved_at": null
+      "valid": true,
+      "digest": "0c3d3ff161328d8291718cbcc2d36cb513de6741d8a2647698714c39e23d1c19",
+      "approved_at": "2026-10-25T01:44:57+08:00",
+      "head_before": "8b86ede17bd5b5960aa4a0ab01189db3e31f8b2a"
     },
     "hotfix": {
       "valid": false,
@@ -33,7 +34,12 @@
       "approved_at": null
     }
   },
-  "dependency_approvals": [],
+  "dependency_approvals": [
+    {
+      "name": "current-request",
+      "approved_at": "2026-10-25T01:39:00+08:00"
+    }
+  ],
   "verification": null,
   "task_progress": [],
   "last_completed": null
