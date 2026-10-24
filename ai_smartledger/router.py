@@ -13,7 +13,6 @@ router.py — 消息编排（已升级为 Loop Agent；原 graph.py，spec 006 �
 
 import logging
 from datetime import datetime
-from typing import Literal, Optional, TypedDict
 from zoneinfo import ZoneInfo
 
 from . import db
@@ -21,21 +20,6 @@ from .agents import react_agent as agent_mod
 
 logger = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-
-
-# ──────────────────────────── State（保留，兼容旧接口） ────────────────────────────
-
-class GraphState(TypedDict, total=False):
-    """LangGraph 在节点间传递的状态。保留以兼容旧调用。"""
-    openid: str
-    content: str
-    now: str
-    intent: Optional[str]
-    reply: str
-    txns: Optional[list]
-    need_amount: Optional[bool]
-    question: Optional[str]
-    query_rows: Optional[list]
 
 
 # ──────────────────────────── 主入口：处理一条消息 ────────────────────────────
@@ -72,7 +56,7 @@ def process_message(openid: str, content: str) -> str:
 
 # ──────────────────────────── 兜底：原固定路由（agent 失败时用） ────────────────────────────
 
-def _dispatch_fallback(state: GraphState) -> str:
+def _dispatch_fallback(state: dict) -> str:
     """agent 循环不可用时的简单 dispatch 兜底（保留原逻辑）。"""
     try:
         reply = _classify_and_route(state)
@@ -82,7 +66,7 @@ def _dispatch_fallback(state: GraphState) -> str:
         return "出了点问题，请重试。"
 
 
-def _classify_and_route(state: GraphState) -> str:
+def _classify_and_route(state: dict) -> str:
     """简单的分类 + 路由兜底（不引入 LangGraph 复杂编排）。"""
     import ai_smartledger.agents.fallback_agent as llm
 
