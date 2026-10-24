@@ -18,7 +18,7 @@ sys.path.insert(0, str(_ROOT))
 
 tmp = tempfile.mkdtemp()
 
-import db
+import ai_smartledger.db as db
 
 db.DB_PATH = pathlib.Path(tmp) / "e2e.db"
 db.init()
@@ -139,7 +139,7 @@ check("V13 已删账本历史仍可查", len(rows) >= 2)
 
 # ── V14 T049: owner 对话时自动带待审批提示（兜底保底）──
 # 用全新的活账本测（不依赖 V13 删掉的账本）
-import agent
+import ai_smartledger.agents.react_agent as agent
 db.get_or_create_user("o_F")
 db.set_nickname("o_F", "老F")
 ok, code_f = db.create_ledger("o_F", "F的账本")

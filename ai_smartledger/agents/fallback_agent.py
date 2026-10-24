@@ -1,5 +1,5 @@
 """
-llm.py — LLM 调用层
+agents/fallback_agent.py — 兜底 LLM 调用层（原 llm.py，spec 006 归入 agents 层）
 
 封装所有跟公司中转站（ccc.szprize.cn/v1）的交互。
 给上层提供四个语义化函数。
@@ -14,7 +14,6 @@ llm.py — LLM 调用层
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +22,9 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from ..core.llm import gateway
+from ..core.prompts import SYSTEM_PROMPT
 
 # QueryParams / TOOL_SCHEMA 定义在本文件（spec 005：tools.py 退役，
 # 兜底查询的参数抽取是 llm 的职责）
@@ -95,39 +97,17 @@ def _get_client() -> OpenAI:
     """懒初始化 OpenAI 客户端（指向公司中转站）。"""
     global _client
     if _client is None:
-        _client = OpenAI(
-            base_url=os.environ.get("LLM_BASE_URL", "https://ccc.szprize.cn/v1"),
-            api_key=os.environ["LLM_API_KEY"],
-        )
+        cfg = gateway()
+        _client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
     return _client
 
 
 def _model() -> str:
-    from config import DEFAULT_MODEL
-    return os.environ.get("LLM_MODEL", DEFAULT_MODEL)
+    return gateway().model
 
 
 # ──────────────────────────── Prompt 常量 ────────────────────────────
-
-SYSTEM_PROMPT = """\
-你是一个微信记账机器人的核心 AI。你的工作是把用户的自然语言消息处理成结构化结果。
-
-当前时间（Asia/Shanghai）：{now}
-
-预设分类清单（只能用这些，拿不准归"其他"）：
-- 支出（7类）：餐饮、交通、购物、居住、娱乐、医疗、其他
-  关键词参考：餐饮(吃饭/外卖/零食/奶茶) 交通(打车/地铁/公交/加油) \
-购物(日用/衣服/数码) 居住(房租/水电/物业) 娱乐(电影/游戏/聚餐) \
-医疗(看病/买药) 其他(人情/教育/话费/礼物)
-- 收入（3类）：工资、外快、其他
-  关键词参考：工资(月薪/发工资) 外快(兼职/报销/投资收益/红包)
-
-重要规则：
-1. 金额默认单位是"元"
-2. 时间默认"现在"，支持"昨天""上周五"等相对时间
-3. 高频分类单独列，低频归"其他"，宁可贵在"其他"也不要错分
-4. 输出必须是合法 JSON，不要多余文本
-"""
+# SYSTEM_PROMPT 已并入 core/prompts.py（spec 006），顶部导入保持调用点不变。
 
 
 # ──────────────────────────── 数据结构 ────────────────────────────

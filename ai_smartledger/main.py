@@ -19,9 +19,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
-import db
-import graph
-import wechat
+from . import db
+from . import router
+from . import wechat
 
 # ──────────────────────────── 日志配置 ────────────────────────────
 
@@ -176,7 +176,7 @@ async def wechat_message(request: Request):
     # 注意：不能 create_task(shield(...))——shield 返回 Future 不是协程
     # shield 让 wait_for 超时后放弃等待但不取消 task，线程跑完触发 done_callback
     task = asyncio.create_task(
-        asyncio.to_thread(graph.process_message, openid, content)
+        asyncio.to_thread(router.process_message, openid, content)
     )
 
     try:
@@ -232,4 +232,4 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("ai_smartledger.main:app", host="0.0.0.0", port=port, reload=True)

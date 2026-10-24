@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-import db
+import ai_smartledger.db as db
 
 
 @pytest.fixture
@@ -117,7 +117,7 @@ def test_tool_envelope_decoupled_and_limit_clamped(iso):
                        f"2026-09-01T{(i // 60) % 24:02d}:{(i * 7) % 60:02d}:00+08:00", f"n{i}")
         for i in range(60)
     ])
-    import agent, json
+    import ai_smartledger.agents.react_agent as agent, json
     tools = {t.name: t for t in agent.make_tools(openid)}
 
     data = json.loads(tools["query_transactions"].invoke(
@@ -142,7 +142,7 @@ def test_tool_envelope_decoupled_and_limit_clamped(iso):
 
 def test_tool_deleted_ledger_same_envelope(iso):
     """FR-008 / SC-005：已删账本与正常查询键结构一致（同一信封 + 只读标记）。"""
-    import agent, json
+    import ai_smartledger.agents.react_agent as agent, json
     db.get_or_create_user("o_owner")
     ok, code = db.create_ledger("o_owner", "我们家")
     lid = db.get_user_ledger_id("o_owner")
@@ -178,8 +178,8 @@ def test_tool_deleted_ledger_same_envelope(iso):
 
 def test_graph_fallback_passes_sql_totals(iso, monkeypatch):
     """FR-012：agent 失败走兜底路由时，总结必须拿到 SQL 聚合的 totals（不再心算）。"""
-    import graph, llm
-    from llm import QueryParams
+    import ai_smartledger.router as graph, ai_smartledger.agents.fallback_agent as llm
+    from ai_smartledger.agents.fallback_agent import QueryParams
     openid, lid = _seed_25_expense("o_fb")
     uid = db.get_or_create_user(openid)
     db.insert_many_for_ledger(lid, uid, [
@@ -206,7 +206,7 @@ def test_graph_fallback_passes_sql_totals(iso, monkeypatch):
 
 def test_totals_param_is_required(iso):
     """FR-010：totals 必填——漏传立刻 TypeError，不会悄悄退回心算。"""
-    import llm
+    import ai_smartledger.agents.fallback_agent as llm
     with pytest.raises(TypeError):
         llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00")
 
@@ -216,7 +216,7 @@ def test_totals_param_is_required(iso):
 def test_record_without_happened_at_defaults_to_now(iso):
     """不传 happened_at → 落库为当前时间，绝不能是空串（空串=从一切查询窗口消失，
     但工具回复仍称"已记"——假成功）。created_at 在 db 层有 or now 兜底，happened_at 对齐。"""
-    import agent, json
+    import ai_smartledger.agents.react_agent as agent, json
     db.get_or_create_user("o_nots")
     tools = {t.name: t for t in agent.make_tools("o_nots")}
     out = tools["record_transactions"].invoke(
@@ -231,7 +231,7 @@ def test_record_without_happened_at_defaults_to_now(iso):
 
 def test_record_with_explicit_happened_at_kept(iso):
     """显式传时间不被覆盖（兜底只作用于缺省/空白）。"""
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     db.get_or_create_user("o_exp")
     tools = {t.name: t for t in agent.make_tools("o_exp")}
     tools["record_transactions"].invoke(
@@ -245,7 +245,7 @@ def test_record_with_explicit_happened_at_kept(iso):
 
 def test_record_blank_happened_at_also_defaulted(iso):
     """LLM 传了空白字符串/None 也要兜底（等价于没传）。"""
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     db.get_or_create_user("o_blank")
     tools = {t.name: t for t in agent.make_tools("o_blank")}
     out = tools["record_transactions"].invoke(

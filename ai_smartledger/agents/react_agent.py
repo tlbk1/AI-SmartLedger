@@ -1,5 +1,5 @@
 """
-agent.py — Loop Agent（循环决策核心）
+agents/react_agent.py — Loop Agent（循环决策核心）
 
 目标：把「固定路由」升级为「会循环思考、调用工具、观察结果、自主决定下一步」的 Agent。
 共账能力：agent 通过工具感知 openid，记账/查账按账本隔离，支持口令制建账本/加入账本。
@@ -15,13 +15,13 @@ agent.py — Loop Agent（循环决策核心）
 """
 
 import logging
-import os
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-import db
+from .. import db
+from ..core.llm import gateway
 
 logger = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -38,19 +38,18 @@ def _get_model():
     global _model_obj
     if _model_obj is None:
         from langchain_openai import ChatOpenAI
-        from config import DEFAULT_MODEL
+        cfg = gateway()
         _model_obj = ChatOpenAI(
-            base_url=os.environ.get("LLM_BASE_URL", "https://ccc.szprize.cn/v1"),
-            api_key=os.environ["LLM_API_KEY"],
-            model=os.environ.get("LLM_MODEL", DEFAULT_MODEL),
+            base_url=cfg.base_url,
+            api_key=cfg.api_key,
+            model=cfg.model,
             temperature=0,
         )
     return _model_obj
 
 
 def _model_name() -> str:
-    from config import DEFAULT_MODEL
-    return os.environ.get("LLM_MODEL", DEFAULT_MODEL)
+    return gateway().model
 
 
 # ──────────────────────────── 工具工厂（闭包注入 openid） ────────────────────────────
@@ -186,7 +185,7 @@ def make_tools(openid: str) -> list:
         def _notify_owner():
             target = None
             try:
-                from main import _do_push_customer  # 延迟导入，避免循环依赖
+                from ..main import _do_push_customer  # 延迟导入，避免循环依赖（T3 notify 解环）
                 if applied_lid is None:
                     return
                 target = db.get_ledger_owner_openid(applied_lid)
@@ -299,7 +298,7 @@ def make_tools(openid: str) -> list:
         def _notify():
             target = None
             try:
-                from main import _do_push_customer  # 延迟导入，避免循环依赖
+                from ..main import _do_push_customer  # 延迟导入，避免循环依赖（T3 notify 解环）
                 target = db._get_openid_by_nickname_in_ledger(lid, applicant_nickname)
                 if target:
                     _do_push_customer(target, notice)
@@ -413,12 +412,12 @@ def make_tools(openid: str) -> list:
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
 
-from prompts import AGENT_SYSTEM_PROMPT  # spec 005：prompt 独立成文件
+from ..core.prompts import AGENT_SYSTEM_PROMPT  # spec 005：prompt 独立；006 归 core/
 
 
 # ──────────────────────────── 主入口 ────────────────────────────
 
-# 失败哨兵：agent 崩溃/报错时返回这个特殊标记，上游 graph.py 识别到它就触发「三分支兜底」。
+# 失败哨兵：agent 崩溃/报错时返回这个特殊标记，上游 router.py 识别到它就触发「三分支兜底」。
 AGENT_FAILURE = "\x00__AGENT_FAILED__\x00"
 
 
@@ -452,7 +451,7 @@ def run_agent(openid: str, content: str) -> str:
 
     安全：每次用 make_tools(openid) 重新编译 agent，openid 通过闭包注入工具，
     用户消息里不拼 openid，避免 prompt injection 冒充身份。
-    失败时返回 AGENT_FAILURE 哨兵，由 graph.py 识别并走三分支兜底。
+    失败时返回 AGENT_FAILURE 哨兵，由 router.py 识别并走三分支兜底。
     """
     try:
         from langgraph.prebuilt import create_react_agent

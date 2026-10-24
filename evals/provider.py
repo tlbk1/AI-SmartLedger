@@ -28,7 +28,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-import db  # noqa: E402
+import ai_smartledger.db as db  # noqa: E402
 
 # 重定向到评测专用库。db._connect() 每次都读模块属性，运行期改写即可生效。
 db.DB_PATH = Path(__file__).resolve().parent / ".eval_ledger.db"
@@ -94,7 +94,7 @@ def call_api(prompt: str, options, context) -> dict:
         if openid == "eval-reader":
             _seed_reader(openid)
 
-        import graph  # 延迟导入：确保上面的 DB 重定向先生效
+        import ai_smartledger.router as graph  # 延迟导入：确保上面的 DB 重定向先生效
 
         reply = graph.process_message(openid, prompt)
         return {"output": reply}

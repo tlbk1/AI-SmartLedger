@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-import db
+import ai_smartledger.db as db
 
 
 @pytest.fixture
@@ -393,7 +393,7 @@ def test_pending_hint_empty_for_non_owner(iso):
     """T049（US2/AC4）：非 owner 不产生提示（不能向申请人泄露申请动态）。"""
     _setup_owner_with_ledger()
     db.apply_join("o_applicant", db.get_my_ledgers("o_owner") and _code_of("我们家"))
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     assert agent._pending_joins_hint("o_applicant") == ""
     assert agent._pending_joins_hint("o_unknown_never_joined") == ""
 
@@ -403,7 +403,7 @@ def test_pending_hint_for_owner_with_pending(iso):
     owner, code, lid = _setup_owner_with_ledger()
     db.set_nickname("o_applicant", "小王")
     db.apply_join("o_applicant", code)
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     hint = agent._pending_joins_hint(owner)
     assert "待审批" in hint and "1" in hint and "小王" in hint
 
@@ -411,7 +411,7 @@ def test_pending_hint_for_owner_with_pending(iso):
 def test_pending_hint_empty_when_no_pending(iso):
     """T049：owner 无待审批 → 不注入提示（不给 LLM 噪音）。"""
     owner, code, lid = _setup_owner_with_ledger()
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     assert agent._pending_joins_hint(owner) == ""
 
 
@@ -480,7 +480,7 @@ def test_agent_tool_refuses_record_into_deleted_ledger(iso):
     """T050：agent 工具层给出友好拒绝（不是静默失败）。"""
     owner, b, lid, _ = _deleted_ledger_with_history()
     db.switch_ledger(b, "我们家")          # 当前账本 = 已删账本
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     tools = {t.name: t for t in agent.make_tools(b)}
     out = tools["record_transactions"].invoke(
         {"transactions": [{"type": "expense", "amount": 1.0, "category": "其他"}]}
@@ -492,7 +492,7 @@ def test_agent_query_tool_marks_deleted_ledger(iso):
     """T050（US10-AC2）：查已删账本时，工具返回带 ledger_deleted 标记 + 提示语。"""
     owner, b, lid, _ = _deleted_ledger_with_history()
     db.switch_ledger(b, "我们家")
-    import agent, json
+    import ai_smartledger.agents.react_agent as agent, json
     tools = {t.name: t for t in agent.make_tools(b)}
     out = tools["query_transactions"].invoke(
         {"date_from": "2026-09-01", "date_to": "2026-09-30"}
@@ -505,7 +505,7 @@ def test_agent_query_tool_marks_deleted_ledger(iso):
 
 def test_summarize_deleted_empty_is_deterministic(iso):
     """T050：已删账本 + 无记录 → 确定性文案（不调 LLM）。spec 004：totals 必填。"""
-    import llm
+    import ai_smartledger.agents.fallback_agent as llm
     zero = {"expense": {"count": 0, "total": 0.0}, "income": {"count": 0, "total": 0.0}}
     out = llm.summarize_query_result([], "上月花了多少", "2026-09-10T10:00:00+08:00",
                                      totals=zero, ledger_deleted=True)
@@ -522,7 +522,7 @@ def test_summarize_deleted_empty_is_deterministic(iso):
 
 def test_single_ledger_no_confirm_rule_present(iso):
     """T032（US7/AC3 + D8）：单账本时直接执行——prompt 有该规则，且单账本下管理操作可用。"""
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     assert "只有一个账本时直接执行" in agent.AGENT_SYSTEM_PROMPT
     owner, code, lid = _setup_owner_with_ledger()
     # 只有一个账本 → 显式指定它就是它，操作成功（无需二次确认）
@@ -533,7 +533,7 @@ def test_single_ledger_no_confirm_rule_present(iso):
 
 def test_multi_ledger_requires_target(iso):
     """T033（US7/AC1+AC2 + FR-004）：多账本须指定；指错账本会被 db 层拒绝。"""
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     # ① prompt 规则存在
     assert "先问" in agent.AGENT_SYSTEM_PROMPT and "哪个账本" in agent.AGENT_SYSTEM_PROMPT
     # ② 用户有 A、B 两个账本

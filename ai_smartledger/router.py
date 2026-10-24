@@ -1,5 +1,5 @@
 """
-graph.py — 消息编排（已升级为 Loop Agent）
+router.py — 消息编排（已升级为 Loop Agent；原 graph.py，spec 006 更名）
 
 核心变化：
   从「固定路由（classify → record/query/chat）」升级为「Loop Agent（循环决策）」。
@@ -16,8 +16,8 @@ from datetime import datetime
 from typing import Literal, Optional, TypedDict
 from zoneinfo import ZoneInfo
 
-import db
-import agent as agent_mod
+from . import db
+from .agents import react_agent as agent_mod
 
 logger = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -84,7 +84,7 @@ def _dispatch_fallback(state: GraphState) -> str:
 
 def _classify_and_route(state: GraphState) -> str:
     """简单的分类 + 路由兜底（不引入 LangGraph 复杂编排）。"""
-    import llm
+    import ai_smartledger.agents.fallback_agent as llm
 
     openid = state["openid"]
     content = state["content"]

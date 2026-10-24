@@ -18,9 +18,9 @@ import pytest
 # 把 wxrecordbot/ 加入 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import db
-import wechat
-from llm import QueryParams
+import ai_smartledger.db as db
+import ai_smartledger.wechat as wechat
+from ai_smartledger.agents.fallback_agent import QueryParams
 
 # ──────────────────────────── 测试常量 ────────────────────────────
 

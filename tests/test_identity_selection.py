@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-import db
+import ai_smartledger.db as db
 
 
 @pytest.fixture
@@ -531,11 +531,11 @@ def test_undelivered_persists_across_restart(iso):
 def test_join_pushes_owner_notification(iso, monkeypatch):
     """FR-038：申请提交后尽力通知 owner；推送失败 → 入待补发（FR-039）。"""
     import time
-    import wechat as w
+    import ai_smartledger.wechat as w
     owner, b, lid = _shared_ledger_with_member()
     code = [l for l in db.get_my_ledgers(owner) if l["id"] == lid][0]["invite_code"]
     monkeypatch.setattr(w, "send_customer_message", lambda *a, **k: False)
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     tools = {t.name: t for t in agent.make_tools("o_c")}
     db.set_nickname("o_c", "小张")
     out = tools["join_ledger"].invoke({"invite_code": code})
@@ -581,7 +581,7 @@ def test_rename_rejects_blank_name(iso):
 
 def test_my_ledgers_tool_hides_code_for_deleted(iso):
     """评审：已删账本的口令已失效，列表不得展示（避免误导转发）。"""
-    import agent
+    import ai_smartledger.agents.react_agent as agent
     db.get_or_create_user("o_owner")
     db.create_ledger("o_owner", "旅行账")
     lid = db.get_user_ledger_id("o_owner")
@@ -621,7 +621,7 @@ def test_no_blank_nickname_row_ever_persisted(iso):
         assert n == 0, "空昵称不得进表"
 
 def test_welcome_first_vs_returning(iso):
-    import main
+    import ai_smartledger.main as main
     w1 = main._build_welcome("o_brand_new")
     assert "默认账本" in w1            # ⑤ 当前处于默认账本
     assert "建账本" in w1 and "口令" in w1  # ② ③
@@ -635,7 +635,7 @@ def test_welcome_first_vs_returning(iso):
 # ════════ US6：降级文案带记账人（FR-032/SC-010）════════
 
 def test_llm_fallback_shows_nickname(iso, monkeypatch):
-    import llm
+    import ai_smartledger.agents.fallback_agent as llm
 
     class _Boom:
         class chat:

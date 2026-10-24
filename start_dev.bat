@@ -10,7 +10,7 @@ echo.
 cd /d "%~dp0"
 
 echo [1/2] 启动本地服务 (uvicorn :8000) ...
-start "wxRecordBot-uvicorn" cmd /k ".venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info"
+start "wxRecordBot-uvicorn" cmd /k ".venv\Scripts\python.exe -m uvicorn ai_smartledger.main:app --host 0.0.0.0 --port 8000 --log-level info"
 
 echo [2/2] 启动内网穿透 (cpolar) ...
 start "wxRecordBot-cpolar" cmd /k "E:\cpolar\cpolar.exe http 8000"
