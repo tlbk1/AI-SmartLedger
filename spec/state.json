@@ -1,8 +1,14 @@
 {
   "workflow_version": 2,
   "project_kind": "legacy",
-  "phase": "ready",
-  "active_change": null,
+  "phase": "drafting-plan",
+  "active_change": {
+    "slug": "006-agent-layers",
+    "type": "refactor",
+    "mode": "full",
+    "branch": "refactor/006-agent-layers",
+    "created_at": "2026-10-25T01:26:18+08:00"
+  },
   "approvals": {
     "baseline": {
       "valid": true,
@@ -11,9 +17,10 @@
       "head_before": "a6e91f2ec6f7e7b178933e18779409bd791dfebd"
     },
     "spec": {
-      "valid": false,
-      "digest": null,
-      "approved_at": null
+      "valid": true,
+      "digest": "f10d687ffa624c378bc591db1b013572d52d603dc32f971666bcef7bdeeeed15",
+      "approved_at": "2026-10-25T01:35:50+08:00",
+      "head_before": "7c8d1dfb696db25835814756065a4176c746306b"
     },
     "plan": {
       "valid": false,
