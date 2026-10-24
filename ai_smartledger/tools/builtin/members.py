@@ -3,7 +3,7 @@ import logging
 
 from langchain_core.tools import tool
 
-from ... import db
+from ... import db, notify
 from .common import resolve_admin_ledger
 
 
@@ -18,7 +18,7 @@ def build(openid: str) -> list:
         if not ok:
             return f"申请失败：{msg}"
         # FR-038（评审问题8）：申请提交后尽力推送通知 owner（主通道）。
-        # 推送失败 _do_push_customer 自己会入 undelivered；生成阶段异常也入队（FR-039）。
+        # 推送失败 notify.push_customer 自己会入 undelivered；生成阶段异常也入队（FR-039）。
         # 定位用【本次申请的账本 id】——查「最新一条 pending」会在用户先后申请多本账时送错 owner。
         # 取账本名在 try 内（FR-039：通知"生成阶段"的异常也不许静默丢）——它跑在调用线程上，
         # 一旦抛出会带着"已提交的申请"一起逃出工具：通知既不发也不入队。
@@ -33,13 +33,12 @@ def build(openid: str) -> list:
         def _notify_owner():
             target = None
             try:
-                from ...main import _do_push_customer  # 延迟导入，避免循环依赖（T3 notify 解环）
                 if applied_lid is None:
                     return
                 target = db.get_ledger_owner_openid(applied_lid)
                 if target:
                     nick = db._ensure_nickname(openid)
-                    _do_push_customer(target, (
+                    notify.push_customer(target, (
                         f"📢 「{nick}」申请加入「{ledger_name}」（#{applied_lid}），"
                         f"回复「有哪些申请」查看；说「同意 {nick}」通过。"
                     ))
@@ -100,10 +99,9 @@ def build(openid: str) -> list:
         def _notify():
             target = None
             try:
-                from ...main import _do_push_customer  # 延迟导入，避免循环依赖（T3 notify 解环）
                 target = db._get_openid_by_nickname_in_ledger(lid, applicant_nickname)
                 if target:
-                    _do_push_customer(target, notice)
+                    notify.push_customer(target, notice)
             except Exception:
                 # FR-039：生成通知异常时入待补发记录，不静默丢失（目标可得时）
                 logging.getLogger(__name__).warning("审批通知生成失败（已入待补发）", exc_info=True)

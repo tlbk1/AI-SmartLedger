@@ -20,6 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from . import db
+from . import notify
 from . import router
 from . import wechat
 
@@ -38,17 +39,7 @@ load_dotenv()  # 读取 .env
 
 WECHAT_TIMEOUT = 4.5  # 秒；给微信 5 秒约束留 0.5 秒余量
 
-
-def _do_push_customer(openid: str, text: str):
-    """同步推送客服消息（慢路径兜底）。在事件循环外线程执行（asyncio.to_thread）。
-    推送失败（超48h等）→ 入队下次补发。"""
-    try:
-        ok = wechat.send_customer_message(openid, text)
-        if not ok:
-            db.enqueue_undelivered(openid, text)
-            logger.info("客服消息未送达，已入队: openid=%s", openid)
-    except Exception:
-        logger.exception("客服消息推送异常: openid=%s", openid)
+# 推送慢路径在 notify 模块（spec 006 迁入，工具闭包与超时回调共用）
 
 
 def _build_welcome(openid: str) -> str:
@@ -206,7 +197,7 @@ async def wechat_message(request: Request):
             if reply_text:
                 # 异步丢到线程池推送，不阻塞事件循环
                 asyncio.create_task(
-                    asyncio.to_thread(_do_push_customer, openid, reply_text)
+                    asyncio.to_thread(notify.push_customer, openid, reply_text)
                 )
 
         task.add_done_callback(_on_done)
