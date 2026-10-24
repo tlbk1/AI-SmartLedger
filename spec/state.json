@@ -1,0 +1,33 @@
+{
+  "workflow_version": 2,
+  "project_kind": "legacy",
+  "phase": "ready",
+  "active_change": null,
+  "approvals": {
+    "baseline": {
+      "valid": true,
+      "digest": "f83b859c462645cd9636a2c85b7bff5a6c210e05d3e28fcd972ea889e0cbaacc",
+      "approved_at": "2026-10-25T01:23:04+08:00",
+      "head_before": "a6e91f2ec6f7e7b178933e18779409bd791dfebd"
+    },
+    "spec": {
+      "valid": false,
+      "digest": null,
+      "approved_at": null
+    },
+    "plan": {
+      "valid": false,
+      "digest": null,
+      "approved_at": null
+    },
+    "hotfix": {
+      "valid": false,
+      "digest": null,
+      "approved_at": null
+    }
+  },
+  "dependency_approvals": [],
+  "verification": null,
+  "task_progress": [],
+  "last_completed": null
+}

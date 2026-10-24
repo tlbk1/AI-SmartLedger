@@ -1,0 +1,41 @@
+{
+  "workflow_version": 2,
+  "project_kind": "legacy",
+  "protected_branches": [
+    "main",
+    "master"
+  ],
+  "quality_commands": [
+    {
+      "name": "pytest",
+      "command": [
+        "python",
+        "-m",
+        "pytest"
+      ],
+      "required": true,
+      "enabled": true
+    },
+    {
+      "name": "pyright",
+      "command": [
+        "pyright"
+      ],
+      "required": true,
+      "enabled": true
+    },
+    {
+      "name": "ruff",
+      "command": [
+        "ruff",
+        "check",
+        "."
+      ],
+      "required": false,
+      "enabled": false
+    }
+  ],
+  "coverage_must_not_decrease_when_configured": true,
+  "remote": "github",
+  "merge_strategy": "squash"
+}
