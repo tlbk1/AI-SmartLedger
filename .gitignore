@@ -48,3 +48,6 @@ Thumbs.db
 local.properties
 *.db
 .zcode/
+
+# promptfoo 评测输出产物
+evals/_*_out.json

@@ -68,3 +68,50 @@
 - 范围：`full`
 - `pytest`：exit `0`，通过
 - `pyright`：exit `0`，通过
+
+## 审查记录（T6，2026-10-25）
+
+### 规格符合性审查（第一轮）
+
+- [x] REQ-001 包结构：ls 实证 ai_smartledger/{core,agents,tools/builtin,db} + main/notify/router/wechat；根目录平铺模块全部退役（git mv）。
+- [x] REQ-002 core 层：grep 实证 LLM_BASE_URL/LLM_API_KEY 解析仅存 core/llm.py（另一命中为注释）；prompts.py 承载两个常量。
+- [x] REQ-003 agents 层：run_agent/_pending_joins_hint/AGENT_FAILURE/_get_model 留守 react_agent；AGENT_SYSTEM_PROMPT/make_tools 顶层 re-export（117 例中 patch 目标全部生效即证）；_get_client 留守 fallback_agent。
+- [x] REQ-004 工具集合守恒：拆分前后名称集合比对脚本通过，17 个（归组与计划一致：2+3+7+4+ask_clarify）。
+- [x] REQ-005 db 原样：git diff --find-renames --stat 显示 7 文件 0 增删（纯 rename）；iso fixture 契约经 117 例实证。
+- [x] REQ-006 router：process_message/_dispatch_fallback/_classify_and_route 逐字保持（独立复审 AST 对比确认）；GraphState 删除（无引用）。
+- [x] REQ-007 notify 解环：grep「from main import|import graph」包内零命中；两处闭包改 notify.push_customer 顶层正向依赖；main 超时回调改调 notify。
+- [x] REQ-008 入口：start_dev.bat 与 main.py uvicorn 串更新；uvicorn ai_smartledger.main:app 冒烟 /health → {"status":"ok"}。
+- [x] REQ-009 契约总则：git diff a6e91f2..HEAD -- tests/ 的非 import 行为零命中（断言零改动机械实证）；WECHAT_* 读取未集中（wechat.py 未动）；无新增 hardcode（见下）。
+- [x] REQ-010 旧符号退役：根目录 import agent/import graph 实证 ImportError；e2e 16/16。
+- [x] 非目标核查：未引入基类/注册表/异步执行器/exceptions 体系；测试未重组；网关默认值未改（仍 szprize，修正归独立变更）；db 内部零改动。
+- [x] test-plan 映射：REQ-001~010 均有对应测试与验收结果。
+
+### 代码质量审查（第二轮）
+
+- [x] 正确性：独立复审对 17 工具、run_agent、兜底五函数、main/graph 做 AST 级新旧对比——LLM 可见 docstring、回复文案、钳制逻辑、错误消息逐字节一致；仅三处已文档化例外（resolve_admin_ledger 签名显式化、notify 正向调用、工具列表按域排序）。
+- [x] 并发：notify 守护线程块逐字迁移，target=None 守卫、异常入队路径不变；notify.push_customer 为 main._do_push_customer 的逐字上提（catch-all 在内层，外层兜底覆盖不变）。
+- [x] 导入契约：无环；懒导入保持（langchain_openai/langgraph.prebuilt/config-in-function/router 兜底导入）。
+- [x] 安全：无密钥/敏感值入日志或仓库；.env 未触碰；*.db 不入库。
+- [x] hardcode 核查：新增字面量仅 gateway() 的旧网关默认值（两处重复合一处，属既有债务搬运，修正归独立变更）；无新增魔法数字/路径/URL。
+- [x] 回归风险：全量 117 passed；pyright（off 模式）0 错误。
+
+### 独立复审（第三镜头，独立子代理，未泄漏先前结论）
+
+- 结论：critical 0 / high 1 / low 2。对逐字搬运保真度、notify 线程块、导入图、工具组装、main 语义、gateway 等价性、密钥/路径做系统核查。
+- [high→遗留债务 D1] 活库路径随包迁移：DB_PATH=Path(__file__).parent/"ledger.db" 使活库从 <root>/db/ledger.db 变为 <root>/ai_smartledger/db/ledger.db，变更未编码数据迁移；本机为单机部署，活库已随包迁移到位（git mv 携带未跟踪 .db），风险限于「存在旧路径活库的其他部署」——当前不存在。按 wu5 约束（数据迁移不在 skill 范围）不在本变更加自动迁移；design.md「无数据迁移」表述以本条为准修正（design.md 已批准哈希锁定，不改原文）。遗留处置：若将来多机部署，另建变更做 DB_PATH 环境变量覆盖 + 迁移脚本。
+- [low F2，待维护者定夺] router._classify_and_route 内 `import ai_smartledger.agents.fallback_agent as llm` 是包内唯一绝对自导入，建议改 `from .agents import fallback_agent as llm`（等价、保持懒加载）。按评审授权规则未自动修改。
+- [low F3，已处置] evals/_t4_out.json（本会话验证的临时产物）被 T4 的 git add -A 误带入库——已 git rm --cached + gitignore 补 evals/_*_out.json。
+- [ ] 缺陷评审（open-code-review）：本会话 python 出站网络被阻断（WinError 10013），ocr 无法在本会话执行——待维护者在本机终端运行后补记录。
+
+### 待维护者执行（收尾前置）
+
+1. 本机终端跑 evals：cd evals 后按 README 导出 key 并 `npx -y promptfoo@latest eval -c promptfooconfig.yaml --max-concurrency 1 --no-cache`，确认 8/8（本会话已排除代码侧回归：117 + e2e 16/16 + 冒烟 + 独立复审全绿）。
+2. 本机终端跑 ocr 缺陷评审（full 模式必跑项），结果回填本文件。
+3. 对 F2 的取舍（一行修改或忽略）。
+4. 归档与 push 需明确授权（push 走 api.github.com）。
+
+### 自动验证 2026-10-25T02:23:35+08:00
+
+- 范围：`affected`
+- `pytest`：exit `0`，通过
+- `pyright`：exit `0`，通过
