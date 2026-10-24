@@ -39,8 +39,6 @@ load_dotenv()  # 读取 .env
 
 WECHAT_TIMEOUT = 4.5  # 秒；给微信 5 秒约束留 0.5 秒余量
 
-# 推送慢路径在 notify 模块（spec 006 迁入，工具闭包与超时回调共用）
-
 
 def _build_welcome(openid: str) -> str:
     """spec 003 US1：关注/再关注的欢迎语（FR-001 定要素、措辞可调）。

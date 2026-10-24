@@ -48,10 +48,6 @@ def _get_model():
     return _model_obj
 
 
-def _model_name() -> str:
-    return gateway().model
-
-
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
 
 from ..core.prompts import AGENT_SYSTEM_PROMPT  # spec 005：prompt 独立；006 归 core/

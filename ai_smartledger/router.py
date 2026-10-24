@@ -3,7 +3,7 @@ router.py — 消息编排（已升级为 Loop Agent；原 graph.py，spec 006 �
 
 核心变化：
   从「固定路由（classify → record/query/chat）」升级为「Loop Agent（循环决策）」。
-  真实意图 → 复用 agent.py 的 create_react_agent 循环。
+  真实意图 → 复用 react_agent 的 create_react_agent 循环。
   兜底 → 保留原固定路由（语义上不再依赖，但失败时可回退）。
 
 设计依据：
@@ -29,7 +29,7 @@ def process_message(openid: str, content: str) -> str:
     主入口：处理一条用户消息，返回回复文本。
     被 main.py 的线程池调用（同步函数）。
 
-    现在改为优先走 agent 循环（agent.py），失败时回退到原固定路由。
+    优先走 react_agent 循环，失败时回退到原固定路由。
     """
     now_str = datetime.now(SHANGHAI).isoformat()
 

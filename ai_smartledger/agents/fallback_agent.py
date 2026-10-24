@@ -1,8 +1,8 @@
 """
 agents/fallback_agent.py — 兜底 LLM 调用层（原 llm.py，spec 006 归入 agents 层）
 
-封装所有跟公司中转站（ccc.szprize.cn/v1）的交互。
-给上层提供四个语义化函数。
+封装对 LLM 网关的全部调用（网关地址见 core/llm.py gateway）。
+给上层提供五个语义化函数。
 
 设计依据：
 - 需求文档 11.2: OpenAI SDK + base_url 指向中转站
@@ -14,11 +14,8 @@ agents/fallback_agent.py — 兜底 LLM 调用层（原 llm.py，spec 006 归入
 
 import json
 import logging
-import time
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Literal, Optional
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -86,7 +83,6 @@ TOOL_SCHEMA = {
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 # ──────────────────────────── LLM 客户端 ────────────────────────────
 
