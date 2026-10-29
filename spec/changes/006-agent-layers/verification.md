@@ -153,3 +153,18 @@
 - 范围：`affected`
 - `pytest`：exit `0`，通过
 - `pyright`：exit `0`，通过
+
+## low 级收敛修复（2026-10-25，维护者授权「修」）
+
+- 范围：仅两处等价修改（ocr low + 独立复审 F2 双镜头收敛项）；F-a/F-b/F-c 行为类候选仍留独立 fix 变更。
+- [F2] ai_smartledger/router.py `_classify_and_route`：`import ai_smartledger.agents.fallback_agent as llm` → `from .agents import fallback_agent as llm`（仍为函数内懒加载，包内导入风格统一，消除包名硬编码）。
+- [gateway 双重解析] ai_smartledger/core/llm.py：`model=os.environ.get("LLM_MODEL", DEFAULT_MODEL)` → `model=DEFAULT_MODEL`；模块文档串同步修正（「唯一来源」范围写明 base_url/api_key，模型名统一取 config.DEFAULT_MODEL）。等价性前提已核验：tests/evals/scripts 全库无 LLM_MODEL 运行期改写（grep 实证），config 仅在 gateway() 内懒导入，DEFAULT_MODEL 自身即 `os.environ.get("LLM_MODEL", "deepseek-v4-flash")`。
+- 前置核验：grep `LLM_MODEL|setenv|monkeypatch.setattr(os` 于 tests/evals/scripts/ai_smartledger → 仅 config.py 定义处与注释命中，无测试改写。
+- 回归：全量 117 passed；e2e 16/16；gateway() 冒烟输出 base_url=ccc.hwprize.com/v1、model=deepseek-flash（.env 生效，证明 DEFAULT_MODEL 的 LLM_MODEL 优先链未变）；`import ai_smartledger.main` 冒烟通过。
+- 无新增 literals；无行为变化（等价替换）。
+
+### 自动验证 2026-10-29T21:34:52+08:00
+
+- 范围：`affected`
+- `pytest`：exit `0`，通过
+- `pyright`：exit `0`，通过

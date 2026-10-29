@@ -68,7 +68,7 @@ def _dispatch_fallback(state: dict) -> str:
 
 def _classify_and_route(state: dict) -> str:
     """简单的分类 + 路由兜底（不引入 LangGraph 复杂编排）。"""
-    import ai_smartledger.agents.fallback_agent as llm
+    from .agents import fallback_agent as llm
 
     openid = state["openid"]
     content = state["content"]
