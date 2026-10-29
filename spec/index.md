@@ -10,3 +10,6 @@
 - 历史归档：[archive/](archive/)
 
 每次 Session 先读取本文件和 `status.md`，再按任务读取相关文档。
+## 最近归档
+
+- [2026-10-29-006-agent-layers](archive/2026-10-29-006-agent-layers/)
