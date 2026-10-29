@@ -1,8 +1,8 @@
 # Wu5 Dev Flow 状态
 
-- 阶段：`ready-to-push`
+- 阶段：`ready`
 - 项目类型：`legacy`
-- 当前分支：`refactor/006-agent-layers`
+- 当前分支：`feature/008-miniprogram-api`
 - 活动变更：`none`
 - 变更模式：`none`
 

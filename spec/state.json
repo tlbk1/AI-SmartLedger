@@ -1,7 +1,7 @@
 {
   "workflow_version": 2,
   "project_kind": "legacy",
-  "phase": "ready-to-push",
+  "phase": "ready",
   "active_change": null,
   "approvals": {
     "baseline": {
