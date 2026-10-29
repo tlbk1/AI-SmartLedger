@@ -43,9 +43,9 @@
   "verification": {
     "scope": "affected",
     "passed": true,
-    "verified_at": "2026-10-29T21:34:53+08:00",
-    "fingerprint": "69f125a85ac955c7a8491fc795ca550225e3dedcc9ad52f65c8b7d9e5d4a8a34",
-    "head": "e4ed4974254e89edd13a0337433856a9914db68d",
+    "verified_at": "2026-10-29T21:35:52+08:00",
+    "fingerprint": "6018d8f518e662c3183f77b3f62391f21dbbeab8bfd57350478641728de777e8",
+    "head": "6a2a19c0b6605948da22f55e8976377f02cd67b5",
     "results": [
       {
         "name": "pytest",
@@ -56,7 +56,7 @@
         ],
         "exit_code": 0,
         "passed": true,
-        "summary": "============================= test session starts =============================\nplatform win32 -- Python 3.11.3, pytest-9.1.1, pluggy-1.6.0\nrootdir: E:\\360MoveData\\Users\\www\\Desktop\\AI-SmartLedger\nplugins: anyio-4.14.2, langsmith-0.10.18\ncollected 117 items\n\ntests\\test_identity_selection.py ....................................... [ 33%]\n...                                                                      [ 35%]\ntests\\test_query_accuracy.py ..............                              [ 47%]\ntests\\test_shared_ledger.py ......................................       [ 80%]\ntests\\test_wechat_mock.py .......................                        [100%]\n\n============================= 117 passed in 6.44s ============================="
+        "summary": "============================= test session starts =============================\nplatform win32 -- Python 3.11.3, pytest-9.1.1, pluggy-1.6.0\nrootdir: E:\\360MoveData\\Users\\www\\Desktop\\AI-SmartLedger\nplugins: anyio-4.14.2, langsmith-0.10.18\ncollected 117 items\n\ntests\\test_identity_selection.py ....................................... [ 33%]\n...                                                                      [ 35%]\ntests\\test_query_accuracy.py ..............                              [ 47%]\ntests\\test_shared_ledger.py ......................................       [ 80%]\ntests\\test_wechat_mock.py .......................                        [100%]\n\n============================= 117 passed in 6.47s ============================="
       },
       {
         "name": "pyright",
