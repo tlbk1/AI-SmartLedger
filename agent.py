@@ -49,6 +49,52 @@ def _model_name() -> str:
 from langchain_core.tools import tool
 
 
+def format_ledger_list(ledgers: list, show_invite: bool = False) -> str:
+    """账本列表的最终展示文本：一行一个、带人数；默认不显示口令。"""
+    lines = ["你的账本："]
+    for l in ledgers:
+        marks = []
+        if l.get("is_current"):
+            marks.append("当前")
+        marks.append(f"{l['member_count']} 人")
+        if l.get("is_deleted"):
+            marks.append("已删除·只读")
+        if show_invite and l.get("role") == "owner" and not l.get("is_deleted"):
+            marks.append(f"口令 {l['invite_code']}")
+        lines.append(f"- #{l['id']} {l['name']}（{' · '.join(marks)}）")
+    lines.append("要再建一个，说「建个账本 XXX」就行。")
+    return "\n".join(lines)
+
+
+_LEDGER_LIST_COMMANDS = frozenset(
+    {"我的账本", "我有哪些账本", "账本列表", "查看账本", "看看我的账本", "看下我的账本"}
+)
+_INVITE_COMMANDS = frozenset(
+    {"口令", "我的口令", "邀请码", "我的邀请码", "账本口令", "账本邀请码"}
+)
+
+
+def _ledger_fast_reply(openid: str, content: str) -> Optional[str]:
+    """精确账本/口令命令直接返回文本，避免模型改写或并行工具调用丢结果。"""
+    key = content.strip()
+    if key not in _LEDGER_LIST_COMMANDS and key not in _INVITE_COMMANDS:
+        return None
+    ledgers = db.get_my_ledgers(openid)
+    if not ledgers:
+        return None  # 交给 agent 走统一的无账本提示
+    reply = format_ledger_list(ledgers, show_invite=key in _INVITE_COMMANDS)
+    try:
+        pending = db.list_pending_joins(openid)
+    except Exception:
+        pending = []
+    if pending:
+        reply += (
+            f"\n（顺带一提：有 {len(pending)} 条加入申请待你同意，"
+            "说「有哪些申请」可查看）"
+        )
+    return reply
+
+
 def make_tools(openid: str) -> list:
     """生成本次 agent 循环用的工具集，openid 通过闭包捕获。"""
 
@@ -196,32 +242,13 @@ def make_tools(openid: str) -> list:
         return db.get_my_join_status_text(openid)
 
     @tool
-    def get_my_ledgers(show: str) -> str:
-        """列出当前用户加入的所有账本（编号/名称/角色/成员名单/标记）。show 填 'y' 即可。"""
+    def get_my_ledgers(show: str = "y", show_invite: Optional[bool] = False) -> str:
+        """列出当前用户加入的所有账本（编号/名称/当前/人数）。show 可不填。
+        show_invite：用户明确问「口令/邀请码」时才传 True；默认 False 不展示口令。"""
         ledgers = db.get_my_ledgers(openid)
         if not ledgers:
-            return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
-        lines = []
-        for l in ledgers:
-            marks = []
-            if l.get("is_current"):
-                marks.append("当前")
-            if l.get("is_default"):
-                marks.append("默认")
-            pv = db.ledger_member_preview(l["id"])
-            members = "、".join(pv["names"])
-            extra = f" 等 {pv['total']} 人" if pv["total"] > len(pv["names"]) else ""
-            base = f"- #{l['id']}  {l['name']}（{l['role']}，成员：{members}{extra}"
-            if l.get("is_deleted"):
-                base += "，已删除·只读"
-            base += "）"
-            # 已删账本的口令已失效，展示会误导用户转发（对方申请只会收到"口令不存在"）
-            if l["role"] == "owner" and not l.get("is_deleted"):
-                base += f" 口令 {l['invite_code']}"
-            if marks:
-                base += " ← " + " · ".join(marks)
-            lines.append(base)
-        return "你加入的账本（编号可用来切换或指定管理目标，如「#4」）：\n" + "\n".join(lines)
+            return "你还没有加入任何账本。说「建个账本 XXX」新建一个，或把管理员给你的口令发我，申请加入。"
+        return format_ledger_list(ledgers, show_invite=show_invite)
 
     @tool
     def switch_ledger(selector: str) -> str:
@@ -427,6 +454,14 @@ def _pending_joins_hint(openid: str) -> str:
     )
 
 
+def _extract_reply(messages) -> str:
+    """取最后一条非工具消息作为回复（工具结果由 Agent 再总结）。"""
+    for m in reversed(messages):
+        if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
+            return m.content
+    return ""
+
+
 def run_agent(openid: str, content: str) -> str:
     """
     处理一条用户消息（agent 主入口）。
@@ -441,6 +476,12 @@ def run_agent(openid: str, content: str) -> str:
         now = __import__("datetime").datetime.now(SHANGHAI).isoformat()
         # 先确保用户已创建 + 有默认账本；否则首次交互时工具找不到账本，记不上账。
         db.get_or_create_user(openid)
+        # 精确的账本/口令命令直接返回，避免模型改写或并行工具调用丢结果。
+        user_msg = {"role": "user", "content": content}
+        fast = _ledger_fast_reply(openid, content)
+        if fast is not None:
+            db.append_chat_history(openid, [user_msg, {"role": "assistant", "content": fast}])
+            return fast
         # owner 每次对话时自动检查待审批并附进 system prompt，作为推送不可靠时的兜底。
         prompt = build_agent_prompt(now) + _pending_joins_hint(openid)
         # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
@@ -451,17 +492,11 @@ def run_agent(openid: str, content: str) -> str:
         )
         # 取历史 + 新消息一起给 agent，让澄清反问后的补答能接上。
         history = db.get_chat_history(openid)   # list[{role, content}, ...]
-        user_msg = {"role": "user", "content": content}
         messages = history + [user_msg]
         result = agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
         # 从 agent 结果里取最后一条 assistant 回复
-        result_msgs = result.get("messages", [])
-        reply = ""
-        for m in reversed(result_msgs):
-            if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
-                reply = m.content
-                break
+        reply = _extract_reply(result.get("messages", []))
         if not reply:
             logger.warning("agent 返回空内容，标记为失败: %r", content[:30])
             return AGENT_FAILURE

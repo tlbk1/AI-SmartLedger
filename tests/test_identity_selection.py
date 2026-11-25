@@ -580,18 +580,20 @@ def test_rename_rejects_blank_name(iso):
 
 
 def test_my_ledgers_tool_hides_code_for_deleted(iso):
-    """评审：已删账本的口令已失效，列表不得展示（避免误导转发）。"""
+    """评审：口令默认不展示；用户明确问时才给，已删账本的口令始终不给。"""
     import agent
     db.get_or_create_user("o_owner")
     db.create_ledger("o_owner", "旅行账")
     lid = db.get_user_ledger_id("o_owner")
     code = [l for l in db.get_my_ledgers("o_owner") if l["id"] == lid][0]["invite_code"]
-    # 删除前：显示口令
     tools = {t.name: t for t in agent.make_tools("o_owner")}
-    assert code in tools["get_my_ledgers"].invoke({"show": "y"})
+    # 默认：不显示口令
+    assert code not in tools["get_my_ledgers"].invoke({"show": "y"})
+    # 明确问口令：显示
+    assert code in tools["get_my_ledgers"].invoke({"show": "y", "show_invite": True})
     db.admin_delete_ledger("o_owner", lid)
-    # 删除后：仍列出（只读标记），但不显示口令
-    out = tools["get_my_ledgers"].invoke({"show": "y"})
+    # 删除后：仍列出（只读标记），即使 show_invite 也不显示已失效口令
+    out = tools["get_my_ledgers"].invoke({"show": "y", "show_invite": True})
     assert "已删除" in out
     assert code not in out, "已删账本不得展示已失效口令"
 

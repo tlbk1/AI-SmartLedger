@@ -186,7 +186,9 @@ def get_my_ledgers(openid: str) -> list[dict]:
         cur_id = u["current_ledger_id"] if u else None
         def_id = u["default_ledger_id"] if u else None
         rows = conn.execute("""
-            SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at, l.deleted_at
+            SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at, l.deleted_at,
+                   (SELECT COUNT(*) FROM ledger_members lm2
+                    WHERE lm2.ledger_id = l.id) AS member_count
             FROM ledger_members lm
             JOIN ledgers l ON l.id = lm.ledger_id
             WHERE lm.user_id = ?
