@@ -52,7 +52,7 @@ def _get_model():
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
 
-from ..core.prompts import AGENT_SYSTEM_PROMPT, build_agent_prompt  # spec 005：prompt 独立；006 归 core/
+from ..core.prompts import build_agent_prompt  # spec 005：prompt 独立；006 归 core/
 
 
 # ──────────────────────────── 主入口 ────────────────────────────
@@ -114,11 +114,22 @@ def _ledger_fast_reply(openid: str, content: str) -> Optional[str]:
 
 
 def _extract_reply(messages) -> str:
-    """取最后一条非工具消息作为回复（工具结果由 Agent 再总结）。"""
-    for m in reversed(messages):
-        if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
-            return m.content
+    """只接受最后一条 AI 消息作为回复；其他情况交给兜底链。"""
+    if not messages:
+        return ""
+    last = messages[-1]
+    if getattr(last, "type", "") == "ai" and getattr(last, "content", ""):
+        return last.content
     return ""
+
+
+def _record_succeeded(messages) -> bool:
+    """本轮是否已有成功的 record_transactions 工具结果（用于避免误导用户重发）。"""
+    return any(
+        getattr(m, "name", "") == "record_transactions"
+        and "已记" in str(getattr(m, "content", ""))
+        for m in messages
+    )
 
 
 def run_agent(openid: str, content: str) -> str:
@@ -158,9 +169,15 @@ def run_agent(openid: str, content: str) -> str:
         result = agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
         # 从 agent 结果里取最后一条 assistant 回复
-        reply = _extract_reply(result.get("messages", []))
+        result_msgs = result.get("messages", [])
+        reply = _extract_reply(result_msgs)
         if not reply:
-            logger.warning("agent 返回空内容，标记为失败: %r", content[:30])
+            if _record_succeeded(result_msgs):
+                # 已写入但没拿到最终确认：不能走「没记上，请重发」，否则会重复记账。
+                reply = "这笔已经记上了，但确认回复没生成。请先查一下（如「最近5笔」）再决定是否重发。"
+                db.append_chat_history(openid, [user_msg, {"role": "assistant", "content": reply}])
+                return reply
+            logger.warning("agent 未产出最终回复，标记为失败: %r", content[:30])
             return AGENT_FAILURE
 
         # 追加本轮 user + assistant 回历史

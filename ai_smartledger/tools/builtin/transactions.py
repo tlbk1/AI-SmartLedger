@@ -68,6 +68,7 @@ def build(openid: str) -> list:
     def record_transactions(transactions: list) -> str:
         """一次性记录一笔或多笔账单（整批事务，全成全不记）。
         transactions 每项: type(expense/income), amount, category, note(可选), happened_at(可选)。
+        空批次、非对象、缺金额或金额不可转数字会被拒绝并返回提示。
         确认信息才会记到账。用户未加入账本会提示先加。"""
         ledger_id = db.get_user_ledger_id(openid)
         if ledger_id is None:
@@ -80,12 +81,26 @@ def build(openid: str) -> list:
                 "请先切换到其他账本，或创建新账本。"
             )
         user_id = db.get_or_create_user(openid)
+        if not transactions:
+            return "没有要记的账目：transactions 为空。请向用户确认要记的内容和金额后重试。"
         txns = []
-        for t in transactions:
+        for idx, t in enumerate(transactions, 1):
+            if not isinstance(t, dict):
+                return (
+                    f"记账失败：第 {idx} 笔不是有效账目"
+                    "（需要含 type/amount/category 的对象），请核对后重试。"
+                )
+            try:
+                amount = float(t["amount"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return (
+                    f"记账失败：第 {idx} 笔金额无效（{t.get('amount')!r}），"
+                    "请向用户确认具体金额后重试。"
+                )
             txns.append(
                 db.Transaction(
                     type=str(t.get("type", "expense")),
-                    amount=float(t["amount"]),
+                    amount=amount,
                     category=str(t.get("category", "其他")),
                     note=str(t.get("note", "")),
                     happened_at=str(t.get("happened_at") or "").strip(),

@@ -10,7 +10,7 @@ prompts:
   - '{{message}}'
 
 providers:
-  - python://./provider.py
+  - python:./provider.py
 
 # 用例串行执行：所有用例共用一个 sqlite 评测库，避免并发写冲突。
 # 注意：顶层 concurrency 键会被忽略，需在命令行加 --concurrency 1（见 README）。
