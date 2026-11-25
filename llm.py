@@ -1,15 +1,6 @@
-"""
-llm.py — LLM 调用层
+"""llm.py — 兜底路径的 LLM 调用层（只在 agent 失败时被 graph.py 调用）。
 
-封装所有跟公司中转站（ccc.szprize.cn/v1）的交互。
-给上层提供四个语义化函数。
-
-设计依据：
-- 需求文档 11.2: OpenAI SDK + base_url 指向中转站
-- 需求文档 11.4: 分类清单 + 关键词写进 prompt
-- 需求文档 14.6: LLM 格式错误重试1次
-- 需求文档 14.6: 分类不确定归"其他"
-- 技术方案 3.4: 用 tool calling 强制结构化输出
+提供：意图分类 / 查询参数抽取 / 结果总结 / 闲聊。
 """
 
 import json
@@ -24,8 +15,9 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# QueryParams / TOOL_SCHEMA 定义在本文件（spec 005：tools.py 退役，
-# 兜底查询的参数抽取是 llm 的职责）
+from prompts import GREETING_TEXT, HELP_TEXT
+
+# QueryParams / TOOL_SCHEMA 定义在本文件：兜底查询的参数抽取是 llm 的职责
 
 @dataclass
 class QueryParams:
@@ -439,10 +431,13 @@ def summarize_query_result(
 
 def chat_reply(content: str, now_str: str) -> str:
     """兜底闲聊回复。"""
+    if content.strip() in ("帮助", "怎么用", "有什么功能"):
+        return HELP_TEXT
     client = _get_client()
     chat_prompt = (
         "你是一个友好的微信记账助手。用户没有说要记账也没有问账时，简短友好地回复。"
-        "可以提醒用户怎么使用：「直接发消息就能记账，比如『午饭35』」。"
+        "用户只是打招呼时，原样回复这句欢迎语，不要扩写：\n"
+        f"{GREETING_TEXT}"
     )
 
     try:
@@ -458,4 +453,4 @@ def chat_reply(content: str, now_str: str) -> str:
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning("闲聊回复失败: %s", e)
-        return "你好！直接发消息就能记账，比如「午饭35」。"
+        return GREETING_TEXT

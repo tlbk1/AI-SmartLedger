@@ -1,13 +1,7 @@
-"""
-wechat.py — 微信公众号协议适配层
+"""wechat.py — 微信公众号协议适配层。
 
 职责边界：签名校验、XML 解析、被动回复组装、客服消息推送、access_token 管理。
 其他模块不碰 XML / 签名 / token 这些协议细节。
-
-设计依据：
-- 需求文档 14.5: 签名校验算法 + 明文模式 + XML 字段
-- 需求文档 14.2: 优先被动回复，超时走客服消息
-- 需求文档 14.8: access_token 内存缓存 + 懒刷新 + 40001 兜底
 """
 
 import hashlib
@@ -24,10 +18,8 @@ logger = logging.getLogger(__name__)
 
 # ──────────────────────────── 配置 ────────────────────────────
 
-# 必须在读取环境变量前加载 .env——
-# 否则当别的模块先 import 本文件时（main.py 的 load_dotenv 还没执行），
-# os.environ 里没有 WECHAT_TOKEN，会落到默认值 beecount2026，
-# 导致签名永远对不上（用户已踩坑：Token 改为 wwwledger 后仍 403）。
+# 必须在读环境变量前加载 .env：若被别的模块先 import，WECHAT_TOKEN 会落到默认值，
+# 导致签名永远对不上（踩过坑：后台改了 Token 仍 403，原因就是这里用了默认值）。
 from dotenv import load_dotenv
 
 load_dotenv()

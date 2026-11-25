@@ -262,8 +262,7 @@ def list_ledger_members(openid: str) -> list[dict]:
         for r in rows:
             nick = r["nickname"]
             if not nick or not nick.strip():
-                # 空昵称 → 生成默认昵称并落库（_ensure_nickname 负责）
-                # 这里在函数外单独落库，避免在 with conn 里再开连接
+                # 空昵称在外层单独落库（_ensure_nickname），避免在 with conn 里再开连接
                 nick = None
             members.append({"user_id": r["id"], "nickname": nick, "role": r["role"]})
         conn.commit()

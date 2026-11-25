@@ -95,8 +95,7 @@ def get_or_create_user(openid: str, nickname: str = "") -> int:
             (openid, nickname, now),
         )
         user_id = cur.lastrowid
-        # 自动创建默认账本「我的账本」，用户是 owner，设为当前账本 + 默认锚点
-        # （spec 003 FR-002/FR-012：身份与默认账本在初始化时一并建立）
+        # 同时创建默认账本「我的账本」（owner + 当前账本 + 默认锚点）
         ledger_id = _create_default_ledger(conn, user_id, now)
         conn.execute(
             "UPDATE users SET current_ledger_id=?, default_ledger_id=? WHERE id=?",

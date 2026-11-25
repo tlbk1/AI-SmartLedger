@@ -522,8 +522,8 @@ def test_summarize_deleted_empty_is_deterministic(iso):
 
 def test_single_ledger_no_confirm_rule_present(iso):
     """T032（US7/AC3 + D8）：单账本时直接执行——prompt 有该规则，且单账本下管理操作可用。"""
-    import agent
-    assert "只有一个账本时直接执行" in agent.AGENT_SYSTEM_PROMPT
+    import prompts
+    assert "只有一个账本时直接执行" in prompts.AGENT_SYSTEM_PROMPT
     owner, code, lid = _setup_owner_with_ledger()
     # 只有一个账本 → 显式指定它就是它，操作成功（无需二次确认）
     assert db.is_ledger_admin(owner, lid) is True
@@ -533,9 +533,9 @@ def test_single_ledger_no_confirm_rule_present(iso):
 
 def test_multi_ledger_requires_target(iso):
     """T033（US7/AC1+AC2 + FR-004）：多账本须指定；指错账本会被 db 层拒绝。"""
-    import agent
+    import prompts
     # ① prompt 规则存在
-    assert "先问" in agent.AGENT_SYSTEM_PROMPT and "哪个账本" in agent.AGENT_SYSTEM_PROMPT
+    assert "先问" in prompts.AGENT_SYSTEM_PROMPT and "哪个账本" in prompts.AGENT_SYSTEM_PROMPT
     # ② 用户有 A、B 两个账本
     db.get_or_create_user("o_multi")
     db.create_ledger("o_multi", "账本A")

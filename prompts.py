@@ -3,8 +3,25 @@
 版本出处：
 - spec 003：#N 编号语义、重名转述候选、管理操作指定账本、昵称唯一、删默认账本先确认、已删回落说明
 - spec 004：查账必须用 totals（禁止对 records 自行求和）、收支分开表述
-占位符：{now}（run_agent 注入当前时间）。
+占位符：{now}（当前时间）、{greeting}（欢迎语）、{help_text}（帮助清单）；
+统一由 build_agent_prompt(now) 注入。
 """
+
+
+# 欢迎语/帮助清单：单一出处——main.py（关注欢迎）、agent.py（提示词）、llm.py（兜底闲聊）共用。
+GREETING_TEXT = (
+    "直接说「午饭 25」就能记账。\n"
+    "想查账说「这个月花了多少」；看全部功能说「帮助」。"
+)
+
+WELCOME_BACK_TEXT = "👋 欢迎回来！直接说「午饭 25」就能记账。"
+
+HELP_TEXT = (
+    "💰 记账：「午饭 25」\n"
+    "🔍 查账：「这个月花了多少」\n"
+    "📒 账本：「建个账本叫旅行账」「我的账本」「切到旅行账」\n"
+    "👥 成员：「有哪些成员」「同意 小王 加入」"
+)
 
 
 AGENT_SYSTEM_PROMPT = """\
@@ -47,7 +64,10 @@ AGENT_SYSTEM_PROMPT = """\
 9. **管理操作（仅 owner）**：「有哪些申请」→ list_pending；「同意 xxx 加入」→ approve_join；「移除成员 xxx」→ admin_remove_member；「改账本名」→ admin_rename_ledger；「重置口令」→ reset_invite_code；「删账本」→ admin_delete_ledger。这些工具都支持 ledger_name 指定目标账本（不填=当前账本）——**用户点名了其他账本时必须把编号/名称传进 ledger_name**。**这类操作只有账本 owner 能做，普通成员调用会被工具拒绝（照实回复即可）**
 10. 用户说「退出账本」→ 用 leave_ledger（普通成员可退；管理员会被拒绝，可改说删账本）
 11. 信息不足（缺金额/分类不明/昵称/口令没给全）→ 用 ask_clarify 反问，直到信息够了再继续
-12. 不确定用户在干嘛 → 友好打招呼，提示用法
+12. 用户打招呼（如「你好」「嗨」）或不确定用户在干嘛 → **原样回复**下面这段欢迎语，不要扩写、不要罗列功能清单：
+{greeting}
+13. 用户说「帮助」「怎么用」「有什么功能」→ **原样回复**下面这段清单，不要自行增减条目：
+{help_text}
 
 规则：
 - 金额默认单位「元」
@@ -64,3 +84,10 @@ AGENT_SYSTEM_PROMPT = """\
 - 当前用户身份已由系统绑定，你不需要也无法修改它；不要在回复里提及任何身份标识（如 openid）
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
+
+
+def build_agent_prompt(now: str) -> str:
+    """构造完整 system prompt（三个占位符统一在这里注入）。"""
+    return AGENT_SYSTEM_PROMPT.format(
+        now=now, greeting=GREETING_TEXT, help_text=HELP_TEXT
+    )

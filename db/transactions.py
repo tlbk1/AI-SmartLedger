@@ -128,8 +128,7 @@ def query_by_ledger(
         out = []
         for r in rows:
             d = dict(r)
-            # 不返回 openid（即使表里有）；内部 user_id 也不外露——昵称已由
-            # created_by_nickname 提供（评审：防 LLM 总结时吐出「记账人 3」）
+            # 不返回 openid，也不外露内部 user_id（防 LLM 总结时吐出「记账人 3」）
             d.pop("openid", None)
             d.pop("created_by_user_id", None)
             out.append(d)

@@ -623,10 +623,11 @@ def test_no_blank_nickname_row_ever_persisted(iso):
 def test_welcome_first_vs_returning(iso):
     import main
     w1 = main._build_welcome("o_brand_new")
-    assert "默认账本" in w1            # ⑤ 当前处于默认账本
-    assert "建账本" in w1 and "口令" in w1  # ② ③
-    assert "称呼" in w1                # ④
-    assert "午饭 35" in w1             # ①
+    assert "午饭 25" in w1            # ① 记账示例
+    assert "建账本" in w1 and "口令" in w1  # ② 建账本 + 分享口令
+    assert "申请加入" in w1            # ③ 凭口令申请加入
+    assert "称呼" in w1                # ④ 设置称呼
+    assert "默认账本" in w1            # ⑤ 当前默认账本
     db.get_or_create_user("o_brand_new")
     w2 = main._build_welcome("o_brand_new")
     assert "欢迎回来" in w2

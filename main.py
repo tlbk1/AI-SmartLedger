@@ -1,18 +1,10 @@
-"""
-main.py — FastAPI 入口 + /wechat 路由
-
-设计依据：
-- 需求文档 14.5: GET 签名校验返回 echostr；POST 签名校验后处理消息
-- 需求文档 14.1: 幂等去重
-- 需求文档 14.2: 优先被动回复（5s 内），超时走客服消息
-- 审查修正 1: shield + done_callback 保证超时后后台结果仍推送
-- 审查遗漏 1: 事件消息（subscribe）无 MsgId/Content，需单独处理
-- 需求文档 14.7: 路由层 async，处理逻辑 asyncio.to_thread 包进线程池
-"""
+"""main.py — FastAPI 入口 + /wechat 路由：微信协议接入与超时降级调度。"""
 
 import asyncio
 import logging
+import logging.handlers
 import os
+import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -22,14 +14,50 @@ from fastapi.responses import PlainTextResponse, Response
 import db
 import graph
 import wechat
+from prompts import WELCOME_BACK_TEXT
 
 # ──────────────────────────── 日志配置 ────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+LOG_FILE = os.path.join(LOG_DIR, "app.log")
+
+
+class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """日志含 openid/消息内容，每次打开（含轮转后）都收紧到 640。"""
+
+    def _open(self):
+        f = super()._open()
+        try:
+            os.chmod(self.baseFilename, 0o640)
+        except OSError:
+            pass
+        return f
+
+
+def _setup_logging():
+    """同时输出到 stderr（journald）和 logs/app.log（无需 root 即可查看）。"""
+    handlers = [logging.StreamHandler()]
+    try:
+        os.makedirs(LOG_DIR, mode=0o750, exist_ok=True)
+        fh = _PrivateRotatingFileHandler(
+            LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handlers.append(fh)
+    except OSError as e:
+        logging.getLogger(__name__).warning("无法创建文件日志 %s: %s", LOG_FILE, e)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
+    # 第三方 HTTP 客户端默认在 INFO 打每条请求，会淹没业务日志
+    for noisy in ("httpx", "httpx2", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────── 环境变量 ────────────────────────────
@@ -40,8 +68,7 @@ WECHAT_TIMEOUT = 4.5  # 秒；给微信 5 秒约束留 0.5 秒余量
 
 
 def _do_push_customer(openid: str, text: str):
-    """同步推送客服消息（慢路径兜底）。在事件循环外线程执行（asyncio.to_thread）。
-    推送失败（超48h等）→ 入队下次补发。"""
+    """同步推送客服消息（在事件循环外的线程执行）。推送失败则入队待补发。"""
     try:
         ok = wechat.send_customer_message(openid, text)
         if not ok:
@@ -52,30 +79,21 @@ def _do_push_customer(openid: str, text: str):
 
 
 def _build_welcome(openid: str) -> str:
-    """spec 003 US1：关注/再关注的欢迎语（FR-001 定要素、措辞可调）。
-
-    - FR-002：关注事件即初始化身份与默认账本（get_or_create_user 幂等）
-    - FR-001 五要素：记账示例 / 建账本分享 / 凭口令申请 / 设置称呼 / 当前处于默认账本
-    - FR-005：再关注区分"欢迎回来"并可附当前账本概况
-    """
+    """关注/再关注的欢迎语。幂等初始化身份；首关给五要素引导，回来只问候一句。"""
     existed = db.user_exists(openid)
     db.get_or_create_user(openid)
+    if existed:
+        return WELCOME_BACK_TEXT
+
     lid = db.get_user_ledger_id(openid)
     info = db.get_ledger_info(lid) if lid else None
-    if info:
-        cur = f"「{info['name']}」（#{info['id']}）"
-        if info["is_deleted"]:
-            cur += "（已删除·只读）"
-    else:
-        cur = "（尚未有账本）"
-    if existed:
-        return f"👋 欢迎回来！你当前在账本 {cur}，随时继续记账。"
+    cur = f"「{info['name']}」（#{info['id']}）" if info else "「我的账本」"
     return (
         "👋 欢迎使用记账助手！\n"
-        f"· 你现在在自己的默认账本 {cur} 里，直接说「午饭 35」就能记一笔\n"
-        "· 说「建账本 家用」可创建共享账本，把口令发给家人朋友\n"
-        "· 拿到别人的口令？发给我即可申请加入（等对方同意）\n"
-        "· 先给自己起个称呼吧，说「我叫小王」"
+        f"· 你在默认账本{cur}，说「午饭 25」就能记一笔\n"
+        "· 建账本：「建个账本 家用」，把口令发给家人朋友\n"
+        "· 加账本：把别人的口令发给我，申请加入\n"
+        "· 起称呼：「我叫小王」"
     )
 
 
@@ -97,11 +115,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/wechat")
 async def wechat_verify(request: Request):
-    """
-    微信配置时的 URL 验证（需求 14.5）。
-    微信发 GET 带 signature/timestamp/nonce/echostr，
-    校验通过后原样返回 echostr。
-    """
+    """微信配置 URL 时的一次性握手：校验签名通过则原样返回 echostr。"""
     params = request.query_params
     signature = params.get("signature", "")
     timestamp = params.get("timestamp", "")
@@ -120,10 +134,8 @@ async def wechat_verify(request: Request):
 
 @app.post("/wechat")
 async def wechat_message(request: Request):
-    """
-    用户消息处理核心路径。
-    审查修正 1：shield + done_callback 保证超时后后台结果仍能推送。
-    """
+    """用户消息处理核心路径：验签 → 解析 → 事件分流 → 幂等 → 处理 + 超时降级。"""
+    t0 = time.monotonic()  # 用于日志记录端到端耗时
     body = await request.body()
     params = request.query_params
     signature = params.get("signature", "")
@@ -141,19 +153,17 @@ async def wechat_message(request: Request):
         logger.warning("XML 解析失败")
         return PlainTextResponse("")
 
-    # ── 事件消息闸门（审查遗漏 1 + spec 003 US1）──
+    # ── 事件消息闸门 ──
     if msg.msg_type != "text":
         if msg.msg_type == "event" and msg.event == "subscribe":
             logger.info("用户关注: %s", msg.from_user)
-            # FR-002/FR-005：初始化身份（幂等）+ 首关/回来差异化欢迎语
             reply = _build_welcome(openid=msg.from_user)
             return Response(
                 content=wechat.build_text_reply(msg.from_user, msg.to_user, reply),
                 media_type="application/xml",
             )
         if msg.msg_type == "event" and msg.event == "unsubscribe":
-            # FR-003/FR-004：取关不做任何数据变更（数据/成员关系全保留，
-            # 其为 owner 的账本照常可用）；平台限制下也无从推送
+            # 取关不做任何数据变更（数据与成员关系全保留）；平台限制下也无从推送
             logger.info("用户取关（数据保留）: %s", msg.from_user)
             return PlainTextResponse("")
         # 其他事件类型 / 图片语音等 → 回空串
@@ -169,12 +179,12 @@ async def wechat_message(request: Request):
     our_account = msg.to_user
     content = msg.content
 
-    logger.info("处理消息: openid=%s content=%s msgid=%s", openid, content[:30], msg_id)
+    logger.info("处理消息: openid=%s content=%r msgid=%s", openid, content[:30], msg_id)
 
-    # ── [E] 处理 + 超时降级（审查修正 1）──
-    # 正确顺序：先 create_task(to_thread(...))，等待时再 wait_for(shield(task))
-    # 注意：不能 create_task(shield(...))——shield 返回 Future 不是协程
-    # shield 让 wait_for 超时后放弃等待但不取消 task，线程跑完触发 done_callback
+    # ── [E] 处理 + 超时降级 ──
+    # 顺序关键：先 create_task(to_thread(...))，等待时再 wait_for(shield(task))。
+    # shield 让 wait_for 超时后放弃等待但不取消 task，线程跑完触发 done_callback。
+    # （不能写成 create_task(shield(...))——shield 返回 Future，不是协程）
     task = asyncio.create_task(
         asyncio.to_thread(graph.process_message, openid, content)
     )
@@ -184,25 +194,37 @@ async def wechat_message(request: Request):
         reply_text = await asyncio.wait_for(asyncio.shield(task), timeout=WECHAT_TIMEOUT)
 
         # 快路径成功：塞回 HTTP 响应
-        logger.info("快路径回复: %s", reply_text[:30])
+        elapsed = time.monotonic() - t0
+        logger.info("PATH=fast elapsed=%.2fs msgid=%s openid=%s", elapsed, msg_id, openid)
+        logger.info("快路径回复 (%.2fs): %r", elapsed, reply_text[:30])
         xml_reply = wechat.build_text_reply(openid, our_account, reply_text)
         return Response(content=xml_reply, media_type="application/xml")
 
     except asyncio.TimeoutError:
         # 超时：返回空串占位，后台线程完成后走客服消息
+        logger.warning(
+            "PATH=slow elapsed=%.2fs msgid=%s openid=%s",
+            time.monotonic() - t0, msg_id, openid,
+        )
         logger.warning("处理超时 %ss，走慢路径: msgid=%s", WECHAT_TIMEOUT, msg_id)
 
         def _on_done(t: asyncio.Task):
-            """后台线程完成时触发：推送客服消息。
-            用 create_task(to_thread(...)) 把同步 HTTP 推送挪到线程池，
-            避免卡住事件循环（send_customer_message 最多可卡约10秒）。"""
+            """后台线程完成时触发：把结果推给用户（丢线程池，不阻塞事件循环）。"""
             if t.cancelled():
                 return
             exc = t.exception()
             if exc is not None:
+                logger.error(
+                    "PATH=slow_failed elapsed=%.2fs msgid=%s openid=%s",
+                    time.monotonic() - t0, msg_id, openid,
+                )
                 logger.error("后台任务异常: %s", exc, exc_info=exc)
                 return
             reply_text = t.result()
+            logger.info(
+                "PATH=slow_done elapsed=%.2fs msgid=%s openid=%s reply_len=%d",
+                time.monotonic() - t0, msg_id, openid, len(reply_text or ""),
+            )
             if reply_text:
                 # 异步丢到线程池推送，不阻塞事件循环
                 asyncio.create_task(

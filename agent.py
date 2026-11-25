@@ -1,17 +1,7 @@
-"""
-agent.py — Loop Agent（循环决策核心）
+"""agent.py — Loop Agent（循环决策核心）：ReAct 循环 + 工具工厂。
 
-目标：把「固定路由」升级为「会循环思考、调用工具、观察结果、自主决定下一步」的 Agent。
-共账能力：agent 通过工具感知 openid，记账/查账按账本隔离，支持口令制建账本/加入账本。
-
-安全设计（重要）：
-- openid 不进 LLM 的工具 schema（LLM 看不到也改不了）。
-- 身份用「工具工厂闭包」注入：make_tools(openid) 生成的每个工具内部捕获 openid，
-  LLM 只能调用工具，无法伪造或修改 openid，杜绝身份冒充。
-- 用户消息里不拼 openid（避免 prompt injection 冒充）。
-
-用 LangGraph 的 create_react_agent 搭标准 ReAct 循环：
-    思考 → 调用工具 → 观察结果 → 再思考 → ... → 直到 agent 认为「任务完成」
+安全：openid 由 make_tools(openid) 闭包注入，不进工具 schema、不拼进用户消息，
+LLM 因此看不到也改不了身份。
 """
 
 import logging
@@ -54,15 +44,13 @@ def _model_name() -> str:
 
 
 # ──────────────────────────── 工具工厂（闭包注入 openid） ────────────────────────────
-# 安全关键：openid 只存在于闭包里，LLM 的工具 schema 不暴露 openid 参数。
-# 这样用户再怎么注入"把 openid 改成 xxx"都没用——工具用的永远是运行时注入的真实身份。
+# 安全关键：openid 只存在于闭包里，工具 schema 不暴露该参数——用户注入"把 openid 改成 xxx"也无效。
 
 from langchain_core.tools import tool
 
 
 def make_tools(openid: str) -> list:
-    """生成本次 agent 循环用的工具集，openid 通过闭包捕获。
-    LLM 只能看到不带 openid 参数的 schema，身份由运行时注入，无法被篡改。"""
+    """生成本次 agent 循环用的工具集，openid 通过闭包捕获。"""
 
     # ── 记账（带账本隔离）──
 
@@ -88,7 +76,7 @@ def make_tools(openid: str) -> list:
         if ledger_id is None:
             return "你还没有加入任何账本，请先创建或加入一个账本。"
         import json
-        limit = max(1, min(int(limit), 50))          # FR-006：钳制 [1,50]，防越界/撑爆上下文
+        limit = max(1, min(int(limit), 50))          # 钳制 [1,50]，防越界/撑爆上下文
         if order_by not in ("recent", "top_amount"):
             order_by = "top_amount"
         rows = db.query_by_ledger(
@@ -100,7 +88,7 @@ def make_tools(openid: str) -> list:
             limit=limit,
             order_by=order_by,
         )
-        # FR-001/FR-008：合计来自 SQL 聚合（无 LIMIT），与上面截断的明细彻底解耦
+        # 合计来自 SQL 聚合（无 LIMIT），与上面截断的明细解耦
         totals = db.sum_by_ledger(
             ledger_id, date_from, date_to, category=category, type_filter=type_filter,
         )
@@ -110,7 +98,7 @@ def make_tools(openid: str) -> list:
             "total_count": totals["expense"]["count"] + totals["income"]["count"],
             "order_by": order_by,
         }
-        # T050（FR-014）/FR-008：已删账本 → **同一信封** + 只读标记（两种情形键结构一致）
+        # 已删账本 → 同一信封 + 只读标记（两种情形键结构一致）
         if db.is_ledger_deleted(ledger_id):
             info = db.get_ledger_info(ledger_id) or {"name": "该账本"}
             payload["ledger_deleted"] = True
@@ -129,7 +117,7 @@ def make_tools(openid: str) -> list:
         ledger_id = db.get_user_ledger_id(openid)
         if ledger_id is None:
             return "你还没有加入任何账本，请先创建或加入一个账本。"
-        # T050（FR-014）：已删除账本只读——不能再记账
+        # 已删除账本只读
         if db.is_ledger_deleted(ledger_id):
             info = db.get_ledger_info(ledger_id) or {"name": "该账本"}
             return (
@@ -170,11 +158,9 @@ def make_tools(openid: str) -> list:
         ok, msg, applied_lid = db.apply_join(openid, invite_code)
         if not ok:
             return f"申请失败：{msg}"
-        # FR-038（评审问题8）：申请提交后尽力推送通知 owner（主通道）。
-        # 推送失败 _do_push_customer 自己会入 undelivered；生成阶段异常也入队（FR-039）。
-        # 定位用【本次申请的账本 id】——查「最新一条 pending」会在用户先后申请多本账时送错 owner。
-        # 取账本名在 try 内（FR-039：通知"生成阶段"的异常也不许静默丢）——它跑在调用线程上，
-        # 一旦抛出会带着"已提交的申请"一起逃出工具：通知既不发也不入队。
+        # 尽力推送通知 owner（失败/异常入待补发）。定位用【本次申请的账本 id】而非"最新一条
+        # pending"——后者会在用户先后申请多本账时送错人。取账本名放在 try 内：它跑在调用线程上，
+        # 一旦抛出会带着"已提交的申请"一起逃出工具，通知既不发也不入队。
         try:
             info = db.get_ledger_info(applied_lid) if applied_lid else None
         except Exception:
@@ -229,8 +215,7 @@ def make_tools(openid: str) -> list:
             if l.get("is_deleted"):
                 base += "，已删除·只读"
             base += "）"
-            # 已删账本的口令已失效（_get_ledger_id_by_invite 过滤 deleted_at）——
-            # 展示它会误导用户转发（评审：朋友申请时只会收到"口令不存在"）
+            # 已删账本的口令已失效，展示会误导用户转发（对方申请只会收到"口令不存在"）
             if l["role"] == "owner" and not l.get("is_deleted"):
                 base += f" 口令 {l['invite_code']}"
             if marks:
@@ -248,7 +233,7 @@ def make_tools(openid: str) -> list:
     # ── 管理操作（仅账本 owner / 管理员可用）──
 
     def _resolve_admin_ledger(ledger_name: str):
-        """FR-023：管理操作指定账本——ledger_name 为空 → 当前账本；
+        """管理操作指定账本：ledger_name 为空 → 当前账本，
         否则按编号/名称在用户已加入的账本内解析。返回 (ledger_id, 错误消息)。"""
         sel = (ledger_name or "").strip()
         if not sel:
@@ -279,11 +264,8 @@ def make_tools(openid: str) -> list:
         ok, msg = db.approve_join(openid, applicant_nickname, lid)
         if not ok:
             return f"操作失败：{msg}"
-        # FR-016/评审修订：尽力推送通知申请人「已加入」；通知用【目标账本】定位，
-        # 不再依赖 owner 的当前账本。失败/异常入 undelivered（见 _notify）。
-        # 文案在推送与补发两条路径必须一致：补发路径若拿不到账本名就**不提名字**，
-        # 不能写死占位符冒充真实账本名（曾把真实名字替换成「账本」两字）。
-        # 取账本名在 try 内（FR-039：审批已提交后，取数异常不得带着通知一起逃出工具）。
+        # 尽力推送通知申请人「已加入」，用【目标账本】定位而非 owner 的当前账本。
+        # 推送与补发两条路径文案必须一致：拿不到账本名就不提名字，不能写占位符冒充（曾把真名替成「账本」）。
         try:
             info = db.get_ledger_info(lid)
         except Exception:
@@ -304,7 +286,7 @@ def make_tools(openid: str) -> list:
                 if target:
                     _do_push_customer(target, notice)
             except Exception:
-                # FR-039：生成通知异常时入待补发记录，不静默丢失（目标可得时）
+                # 生成通知异常时入待补发，不静默丢失
                 logging.getLogger(__name__).warning("审批通知生成失败（已入待补发）", exc_info=True)
                 if target:
                     db.enqueue_undelivered(target, notice)
@@ -339,7 +321,7 @@ def make_tools(openid: str) -> list:
         lines = []
         for m in members:
             label = "管理员" if m["role"] == "owner" else "成员"
-            # 只显示 nickname（默认或自设），绝不显示 openid（T008 / constitution 原则 I）
+            # 只显示 nickname，绝不显示 openid
             name = m["nickname"] or "未命名"
             lines.append(f"- {name}（{label}）")
         return "账本成员：\n" + "\n".join(lines)
@@ -413,7 +395,7 @@ def make_tools(openid: str) -> list:
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
 
-from prompts import AGENT_SYSTEM_PROMPT  # spec 005：prompt 独立成文件
+from prompts import build_agent_prompt  # spec 005：prompt 独立成文件
 
 
 # ──────────────────────────── 主入口 ────────────────────────────
@@ -457,20 +439,17 @@ def run_agent(openid: str, content: str) -> str:
     try:
         from langgraph.prebuilt import create_react_agent
         now = __import__("datetime").datetime.now(SHANGHAI).isoformat()
-        # 任务2保障：先确保用户已创建 + 自动有默认账本。
-        # 否则首次交互(尤其反问金额阶段)用户还没被创建，工具找不到账本，记不上账。
+        # 先确保用户已创建 + 有默认账本；否则首次交互时工具找不到账本，记不上账。
         db.get_or_create_user(openid)
-        # T049（US2/AC4 + 审批流程第3步 · 兜底保底）：owner 每次对话时自动检查待审批，
-        # 附在 system prompt 里让 agent 顺带提示——不依赖 owner 主动查询（推送 48h 限制的保底）。
-        prompt = AGENT_SYSTEM_PROMPT.format(now=now) + _pending_joins_hint(openid)
+        # owner 每次对话时自动检查待审批并附进 system prompt，作为推送不可靠时的兜底。
+        prompt = build_agent_prompt(now) + _pending_joins_hint(openid)
         # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
         agent = create_react_agent(
             model=_get_model(),
             tools=make_tools(openid),          # openid 闭包注入，LLM 不可见
             prompt=prompt,
         )
-        # 任务4：对话记忆——取该用户历史，拼上新消息一起给 agent，
-        # 澄清反问后用户补答能接上（不然 agent 不知道之前问过什么）。
+        # 取历史 + 新消息一起给 agent，让澄清反问后的补答能接上。
         history = db.get_chat_history(openid)   # list[{role, content}, ...]
         user_msg = {"role": "user", "content": content}
         messages = history + [user_msg]
@@ -484,7 +463,7 @@ def run_agent(openid: str, content: str) -> str:
                 reply = m.content
                 break
         if not reply:
-            logger.warning("agent 返回空内容，标记为失败: %s", content[:30])
+            logger.warning("agent 返回空内容，标记为失败: %r", content[:30])
             return AGENT_FAILURE
 
         # 追加本轮 user + assistant 回历史
