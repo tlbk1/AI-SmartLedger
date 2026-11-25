@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-根目录平铺 7 模块（main 235 / graph 129 / agent 495 / llm 461 / prompts 66 / config 6 / wechat 210）+ `db/` 域包（六域约 1450 行）。import 边：main→{db,graph,wechat}；graph→{db,agent}；agent→{db,prompts}；延迟边 agent⤳main（:189/:302）、graph⤳llm。详细见 `spec/baseline/system-map.md`。
+根目录平铺 7 模块（main 235 / graph 129 / agent 495 / llm 461 / prompts 66 / config 6 / wechat 210）+ `db/` 域包（六域约 1450 行）。import 边：main→{db,graph,wechat}；graph→{db,agent}；agent→{db,prompts}；延迟边 agent⤳main（:189/:302）、graph⤳llm。详细见 `docs/specs/baseline/system-map.md`。
 
 ## 方案与数据流
 

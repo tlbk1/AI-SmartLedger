@@ -46,4 +46,4 @@ spec 006（分层重构）的验证阶段，ocr 外部评审与独立复审共�
 
 ## 流程备注
 
-- 007 创建时 006 处于 `ready-to-push`（已归档未推送），wu5 无「多变更排队」能力。经用户「那三个缺陷修一下」的直接指令，对 `spec/state.json` 的 phase 做一次受控例外（`ready-to-push` → `ready`，提交 fe0752b），006 的归档记录与 `last_completed` 原样保留，可经 git 回退。
+- 007 创建时 006 处于 `ready-to-push`（已归档未推送），wu5 无「多变更排队」能力。经用户「那三个缺陷修一下」的直接指令，对 `docs/specs/wu5-retired/state.json` 的 phase 做一次受控例外（`ready-to-push` → `ready`，提交 fe0752b），006 的归档记录与 `last_completed` 原样保留，可经 git 回退。

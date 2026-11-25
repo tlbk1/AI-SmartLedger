@@ -4,7 +4,7 @@
 
 根目录平铺 7 个模块无包边界；`agent.py`（495 行）职责混装——ReAct 编排、17 个工具闭包（约 330 行）、模型构造挤在一个文件；`llm.py`（461 行）兜底链同时混装数据类、TOOL_SCHEMA 与提示词；`graph.py` 已无 StateGraph，名不副实；存在全库唯一循环依赖边 agent⤳main（agent.py:189/302 两处延迟导入 `from main import _do_push_customer`）。维护者希望参考 hello-agents 的分层树（core/agents/tools）获得一眼可读的结构。
 
-基线证据见 `spec/baseline/*`（117 tests passed in 12.12s，2026-10-25）。方向性决定（包一层 ai_smartledger、解循环依赖）已经维护者在计划评审中拍板；网关默认值修正已按「不把行为修正顺手修进重构」拆为独立变更（见 `spec/baseline/debt.md` 候选①）。
+基线证据见 `docs/specs/baseline/*`（117 tests passed in 12.12s，2026-10-25）。方向性决定（包一层 ai_smartledger、解循环依赖）已经维护者在计划评审中拍板；网关默认值修正已按「不把行为修正顺手修进重构」拆为独立变更（见 `docs/specs/baseline/debt.md` 候选①）。
 
 ## 目标
 

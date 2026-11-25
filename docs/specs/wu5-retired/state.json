@@ -38,7 +38,7 @@
   "last_completed": {
     "slug": "006-agent-layers",
     "archived_at": "2026-10-29T21:35:57+08:00",
-    "archive": "spec/archive/2026-10-29-006-agent-layers",
+    "archive": "docs/specs/006-agent-layers",
     "verification": {
       "scope": "affected",
       "passed": true,

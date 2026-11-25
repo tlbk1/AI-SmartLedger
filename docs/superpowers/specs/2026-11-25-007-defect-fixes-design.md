@@ -2,7 +2,7 @@
 
 日期：2026-11-25
 工作区：`~/worktrees/wt-007-defect-fixes`（基于新 main，已合入 007 规格）
-来源规格：`spec/changes/007-defect-fixes/{proposal,spec,design}.md`
+来源规格：`docs/specs/007-defect-fixes/{proposal,spec,design}.md`
 
 ## 目标
 

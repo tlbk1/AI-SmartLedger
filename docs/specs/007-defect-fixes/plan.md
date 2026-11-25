@@ -1,6 +1,6 @@
 # 实施计划：007-defect-fixes
 
-> 本文件批准后保持不可变；任务进度写入 `spec/state.json`。
+> 本文件批准后保持不可变；任务进度写入 `docs/specs/wu5-retired/state.json`。
 
 ## 任务
 

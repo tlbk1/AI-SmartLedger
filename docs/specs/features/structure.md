@@ -1,7 +1,7 @@
 # features — 当前有效规格（006-agent-layers 归档后的模块结构与行为速览）
 
-> 权威来源：代码 + 测试（117 用例）+ 本目录。基线快照见 `spec/baseline/`（006 接管时点）；
-> 变更历史见 `spec/archive/`。
+> 权威来源：代码 + 测试（117 用例）+ 本目录。基线快照见 `docs/specs/baseline/`（006 接管时点）；
+> 变更历史见 `docs/specs/`。
 
 ## 模块结构（spec 006 起）
 

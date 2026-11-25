@@ -1,4 +1,6 @@
-# Wu5 Dev Flow 状态
+> wu5-dev-flow 已于 2026-11-25 退役；本文件是历史快照，不再由 `wu5_flow.py` 更新。当前流程见 `docs/specs/README.md`。
+
+# Wu5 Dev Flow 状态（历史）
 
 - 阶段：`drafting-spec`
 - 项目类型：`legacy`
@@ -17,4 +19,4 @@
 
 - 尚无验证记录
 
-本文件由 `wu5_flow.py` 同步；请勿手工修改。
+本文件为历史快照，不再更新。
