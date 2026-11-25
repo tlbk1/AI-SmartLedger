@@ -1,10 +1,10 @@
 # Wu5 Dev Flow 状态
 
-- 阶段：`ready-to-push`
+- 阶段：`drafting-spec`
 - 项目类型：`legacy`
-- 当前分支：`refactor/006-agent-layers`
-- 活动变更：`none`
-- 变更模式：`none`
+- 当前分支：`fix/007-defect-fixes`
+- 活动变更：`007-defect-fixes`
+- 变更模式：`full`
 
 ## 批准
 
