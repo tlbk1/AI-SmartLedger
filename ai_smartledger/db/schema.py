@@ -68,8 +68,7 @@ def init():
             )
         """)
 
-        # spec 003 FR-012：users.default_ledger_id —— 默认账本"指向关系"锚点
-        # （不靠名字识别：改名不影响指向；删除默认账本触发重建并更新指向）
+        # users.default_ledger_id：默认账本用「指向关系」而非名字识别（改名不影响指向）
         _add_column_if_missing(conn, "users", "default_ledger_id", "INTEGER")
         # 存量回填：优先「我的账本」（owner+未删除），否则最近加入的未删除账本
         for u in conn.execute(
@@ -94,8 +93,8 @@ def init():
                 )
         conn.commit()
 
-        # spec 003 FR-009：昵称全局唯一索引（并发设置同一昵称时至多一个成功）。
-        # 存量若有重名会建失败——先运行 db.cleanup_duplicate_nicknames()（FR-010）
+        # 昵称全局唯一索引（并发设置时至多一个成功）。存量有重名会建失败——
+        # 先运行 db.cleanup_duplicate_nicknames()
         import logging
         try:
             conn.execute(

@@ -42,6 +42,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# === 运行日志(含 openid/消息内容,不提交) ===
+logs/
+
 # === Android(客户端将来会用) ===
 *.apk
 *.aab

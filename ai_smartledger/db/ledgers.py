@@ -99,8 +99,8 @@ def get_user_ledger_id(openid: str) -> Optional[int]:
         if row is None:
             return None
         if row["current_ledger_id"] is not None:
-            # 账本存在即返回（含已软删除——用户显式切入是为了看历史，只读）。
-            # 仍要求成员关系成立：被移除/退出后失效的指针不得再读到该账本（账本隔离）。
+            # 账本存在即返回（含已删除——显式切入是为了看历史，只读）；但仍要求成员关系成立：
+            # 被移除/退出后失效的指针不得再读到该账本（账本隔离）。
             l = conn.execute("SELECT 1 FROM ledgers WHERE id=?", (row["current_ledger_id"],)).fetchone()
             if l and _is_member_by_uid(conn, row["id"], row["current_ledger_id"]):
                 return row["current_ledger_id"]
@@ -186,7 +186,9 @@ def get_my_ledgers(openid: str) -> list[dict]:
         cur_id = u["current_ledger_id"] if u else None
         def_id = u["default_ledger_id"] if u else None
         rows = conn.execute("""
-            SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at, l.deleted_at
+            SELECT l.id, l.name, l.invite_code, lm.role, lm.joined_at, l.deleted_at,
+                   (SELECT COUNT(*) FROM ledger_members lm2
+                    WHERE lm2.ledger_id = l.id) AS member_count
             FROM ledger_members lm
             JOIN ledgers l ON l.id = lm.ledger_id
             WHERE lm.user_id = ?

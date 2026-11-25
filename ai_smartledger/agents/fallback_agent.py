@@ -21,10 +21,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from ..core.llm import gateway
-from ..core.prompts import SYSTEM_PROMPT
+from ..core.prompts import GREETING_TEXT, HELP_TEXT, SYSTEM_PROMPT
 
-# QueryParams / TOOL_SCHEMA 定义在本文件（spec 005：tools.py 退役，
-# 兜底查询的参数抽取是 llm 的职责）
+# QueryParams / TOOL_SCHEMA 定义在本文件：兜底查询的参数抽取是 llm 的职责
 
 @dataclass
 class QueryParams:
@@ -380,7 +379,8 @@ def summarize_query_result(
         "格式参考：「本月支出 ¥820（12 笔），收入 ¥5,000（1 笔）」\n"
         "这是【共享账本】，明细里每条可能带 created_by_nickname（记账人昵称）："
         "如果用户问「谁记的/谁花的」，或不同记录是不同人记的，请在总结里点出记账人；"
-        "否则不必逐条标注。"
+        "否则不必逐条标注。\n"
+        "微信不渲染 Markdown：不要使用 **、#、反引号，强调用「」或直接说。"
         f"{deleted_note}"
     )
 
@@ -415,10 +415,14 @@ def summarize_query_result(
 
 def chat_reply(content: str, now_str: str) -> str:
     """兜底闲聊回复。"""
+    if content.strip() in ("帮助", "怎么用", "有什么功能"):
+        return HELP_TEXT
     client = _get_client()
     chat_prompt = (
         "你是一个友好的微信记账助手。用户没有说要记账也没有问账时，简短友好地回复。"
-        "可以提醒用户怎么使用：「直接发消息就能记账，比如『午饭35』」。"
+        "用户只是打招呼时，原样回复这句欢迎语，不要扩写：\n"
+        f"{GREETING_TEXT}"
+        "\n微信不渲染 Markdown：不要使用 **、#、反引号。"
     )
 
     try:
@@ -434,4 +438,4 @@ def chat_reply(content: str, now_str: str) -> str:
         return resp.choices[0].message.content.strip()
     except Exception as e:
         logger.warning("闲聊回复失败: %s", e)
-        return "你好！直接发消息就能记账，比如「午饭35」。"
+        return GREETING_TEXT

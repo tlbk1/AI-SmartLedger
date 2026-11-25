@@ -15,6 +15,7 @@ agents/react_agent.py — Loop Agent（循环决策核心）
 """
 
 import logging
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 from .. import db
 from ..core.llm import gateway
 from ..tools import make_tools  # spec 006：工具工厂归 tools 层；此处 re-export 保持调用/patch 目标不变
+from ..tools.builtin.ledgers import format_ledger_list
 
 logger = logging.getLogger(__name__)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -50,7 +52,7 @@ def _get_model():
 
 # ──────────────────────────── Agent 系统提示 ────────────────────────────
 
-from ..core.prompts import AGENT_SYSTEM_PROMPT  # spec 005：prompt 独立；006 归 core/
+from ..core.prompts import AGENT_SYSTEM_PROMPT, build_agent_prompt  # spec 005：prompt 独立；006 归 core/
 
 
 # ──────────────────────────── 主入口 ────────────────────────────
@@ -82,6 +84,43 @@ def _pending_joins_hint(openid: str) -> str:
     )
 
 
+_LEDGER_LIST_COMMANDS = frozenset(
+    {"我的账本", "我有哪些账本", "账本列表", "查看账本", "看看我的账本", "看下我的账本"}
+)
+_INVITE_COMMANDS = frozenset(
+    {"口令", "我的口令", "邀请码", "我的邀请码", "账本口令", "账本邀请码"}
+)
+
+
+def _ledger_fast_reply(openid: str, content: str) -> Optional[str]:
+    """精确账本/口令命令直接返回文本，避免模型改写或并行工具调用丢结果。"""
+    key = content.strip()
+    if key not in _LEDGER_LIST_COMMANDS and key not in _INVITE_COMMANDS:
+        return None
+    ledgers = db.get_my_ledgers(openid)
+    if not ledgers:
+        return None  # 交给 agent 走统一的无账本提示
+    reply = format_ledger_list(ledgers, show_invite=key in _INVITE_COMMANDS)
+    try:
+        pending = db.list_pending_joins(openid)
+    except Exception:
+        pending = []
+    if pending:
+        reply += (
+            f"\n（顺带一提：有 {len(pending)} 条加入申请待你同意，"
+            "说「有哪些申请」可查看）"
+        )
+    return reply
+
+
+def _extract_reply(messages) -> str:
+    """取最后一条非工具消息作为回复（工具结果由 Agent 再总结）。"""
+    for m in reversed(messages):
+        if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
+            return m.content
+    return ""
+
+
 def run_agent(openid: str, content: str) -> str:
     """
     处理一条用户消息（agent 主入口）。
@@ -97,9 +136,15 @@ def run_agent(openid: str, content: str) -> str:
         # 任务2保障：先确保用户已创建 + 自动有默认账本。
         # 否则首次交互(尤其反问金额阶段)用户还没被创建，工具找不到账本，记不上账。
         db.get_or_create_user(openid)
+        # 精确的账本/口令命令直接返回，避免模型改写或并行工具调用丢结果。
+        user_msg = {"role": "user", "content": content}
+        fast = _ledger_fast_reply(openid, content)
+        if fast is not None:
+            db.append_chat_history(openid, [user_msg, {"role": "assistant", "content": fast}])
+            return fast
         # T049（US2/AC4 + 审批流程第3步 · 兜底保底）：owner 每次对话时自动检查待审批，
         # 附在 system prompt 里让 agent 顺带提示——不依赖 owner 主动查询（推送 48h 限制的保底）。
-        prompt = AGENT_SYSTEM_PROMPT.format(now=now) + _pending_joins_hint(openid)
+        prompt = build_agent_prompt(now) + _pending_joins_hint(openid)
         # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
         agent = create_react_agent(
             model=_get_model(),
@@ -109,19 +154,13 @@ def run_agent(openid: str, content: str) -> str:
         # 任务4：对话记忆——取该用户历史，拼上新消息一起给 agent，
         # 澄清反问后用户补答能接上（不然 agent 不知道之前问过什么）。
         history = db.get_chat_history(openid)   # list[{role, content}, ...]
-        user_msg = {"role": "user", "content": content}
         messages = history + [user_msg]
         result = agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
         # 从 agent 结果里取最后一条 assistant 回复
-        result_msgs = result.get("messages", [])
-        reply = ""
-        for m in reversed(result_msgs):
-            if getattr(m, "type", "") != "tool" and getattr(m, "content", ""):
-                reply = m.content
-                break
+        reply = _extract_reply(result.get("messages", []))
         if not reply:
-            logger.warning("agent 返回空内容，标记为失败: %s", content[:30])
+            logger.warning("agent 返回空内容，标记为失败: %r", content[:30])
             return AGENT_FAILURE
 
         # 追加本轮 user + assistant 回历史

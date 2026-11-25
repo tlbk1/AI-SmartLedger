@@ -580,18 +580,20 @@ def test_rename_rejects_blank_name(iso):
 
 
 def test_my_ledgers_tool_hides_code_for_deleted(iso):
-    """评审：已删账本的口令已失效，列表不得展示（避免误导转发）。"""
+    """评审：口令默认不展示；用户明确问时才给，已删账本的口令始终不给。"""
     import ai_smartledger.agents.react_agent as agent
     db.get_or_create_user("o_owner")
     db.create_ledger("o_owner", "旅行账")
     lid = db.get_user_ledger_id("o_owner")
     code = [l for l in db.get_my_ledgers("o_owner") if l["id"] == lid][0]["invite_code"]
-    # 删除前：显示口令
     tools = {t.name: t for t in agent.make_tools("o_owner")}
-    assert code in tools["get_my_ledgers"].invoke({"show": "y"})
+    # 默认：不显示口令
+    assert code not in tools["get_my_ledgers"].invoke({"show": "y"})
+    # 明确问口令：显示
+    assert code in tools["get_my_ledgers"].invoke({"show": "y", "show_invite": True})
     db.admin_delete_ledger("o_owner", lid)
-    # 删除后：仍列出（只读标记），但不显示口令
-    out = tools["get_my_ledgers"].invoke({"show": "y"})
+    # 删除后：仍列出（只读标记），即使 show_invite 也不显示已失效口令
+    out = tools["get_my_ledgers"].invoke({"show": "y", "show_invite": True})
     assert "已删除" in out
     assert code not in out, "已删账本不得展示已失效口令"
 
@@ -623,10 +625,11 @@ def test_no_blank_nickname_row_ever_persisted(iso):
 def test_welcome_first_vs_returning(iso):
     import ai_smartledger.main as main
     w1 = main._build_welcome("o_brand_new")
-    assert "默认账本" in w1            # ⑤ 当前处于默认账本
-    assert "建账本" in w1 and "口令" in w1  # ② ③
-    assert "称呼" in w1                # ④
-    assert "午饭 35" in w1             # ①
+    assert "午饭 25" in w1            # ① 记账示例
+    assert "建账本" in w1 and "口令" in w1  # ② 建账本 + 分享口令
+    assert "申请加入" in w1            # ③ 凭口令申请加入
+    assert "称呼" in w1                # ④ 设置称呼
+    assert "默认账本" in w1            # ⑤ 当前默认账本
     db.get_or_create_user("o_brand_new")
     w2 = main._build_welcome("o_brand_new")
     assert "欢迎回来" in w2

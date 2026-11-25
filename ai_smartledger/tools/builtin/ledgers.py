@@ -1,7 +1,26 @@
 """builtin/ledgers — 账本域工具：创建 / 我的账本 / 切换。"""
+from typing import Optional
+
 from langchain_core.tools import tool
 
 from ... import db
+
+
+def format_ledger_list(ledgers: list, show_invite: bool = False) -> str:
+    """账本列表的最终展示文本：一行一个、带人数；默认不显示口令。"""
+    lines = ["你的账本："]
+    for l in ledgers:
+        marks = []
+        if l.get("is_current"):
+            marks.append("当前")
+        marks.append(f"{l['member_count']} 人")
+        if l.get("is_deleted"):
+            marks.append("已删除·只读")
+        if show_invite and l.get("role") == "owner" and not l.get("is_deleted"):
+            marks.append(f"口令 {l['invite_code']}")
+        lines.append(f"- #{l['id']} {l['name']}（{' · '.join(marks)}）")
+    lines.append("要再建一个，说「建个账本 XXX」就行。")
+    return "\n".join(lines)
 
 
 def build(openid: str) -> list:
@@ -18,33 +37,13 @@ def build(openid: str) -> list:
         return f"创建失败：{result}"
 
     @tool
-    def get_my_ledgers(show: str) -> str:
-        """列出当前用户加入的所有账本（编号/名称/角色/成员名单/标记）。show 填 'y' 即可。"""
+    def get_my_ledgers(show: str = "y", show_invite: Optional[bool] = False) -> str:
+        """列出当前用户加入的所有账本（编号/名称/当前/人数）。show 可不填。
+        show_invite：用户明确问「口令/邀请码」时才传 True；默认 False 不展示口令。"""
         ledgers = db.get_my_ledgers(openid)
         if not ledgers:
-            return "你还没有加入任何账本。可创建（create_ledger）或凭口令加入（join_ledger）。"
-        lines = []
-        for l in ledgers:
-            marks = []
-            if l.get("is_current"):
-                marks.append("当前")
-            if l.get("is_default"):
-                marks.append("默认")
-            pv = db.ledger_member_preview(l["id"])
-            members = "、".join(pv["names"])
-            extra = f" 等 {pv['total']} 人" if pv["total"] > len(pv["names"]) else ""
-            base = f"- #{l['id']}  {l['name']}（{l['role']}，成员：{members}{extra}"
-            if l.get("is_deleted"):
-                base += "，已删除·只读"
-            base += "）"
-            # 已删账本的口令已失效（_get_ledger_id_by_invite 过滤 deleted_at）——
-            # 展示它会误导用户转发（评审：朋友申请时只会收到"口令不存在"）
-            if l["role"] == "owner" and not l.get("is_deleted"):
-                base += f" 口令 {l['invite_code']}"
-            if marks:
-                base += " ← " + " · ".join(marks)
-            lines.append(base)
-        return "你加入的账本（编号可用来切换或指定管理目标，如「#4」）：\n" + "\n".join(lines)
+            return "你还没有加入任何账本。说「建个账本 XXX」新建一个，或把管理员给你的口令发我，申请加入。"
+        return format_ledger_list(ledgers, show_invite=show_invite)
 
     @tool
     def switch_ledger(selector: str) -> str:

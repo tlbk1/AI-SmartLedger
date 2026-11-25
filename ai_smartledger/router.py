@@ -1,15 +1,4 @@
-"""
-router.py — 消息编排（已升级为 Loop Agent；原 graph.py，spec 006 更名）
-
-核心变化：
-  从「固定路由（classify → record/query/chat）」升级为「Loop Agent（循环决策）」。
-  真实意图 → 复用 react_agent 的 create_react_agent 循环。
-  兜底 → 保留原固定路由（语义上不再依赖，但失败时可回退）。
-
-设计依据：
-- 需求文档 5 章：意图识别 → 记账/查账/闲聊
-- 方案文档 docs/loop-agent-改造方案.md
-"""
+"""router.py — 消息编排：待补发拼接 → agent 循环（主路径）→ 固定路由兜底（失败时）。"""
 
 import logging
 from datetime import datetime
@@ -46,7 +35,7 @@ def process_message(openid: str, content: str) -> str:
     # 只依赖异常(except)是不够的——agent 会把报错"吞"成一句人话，
     # 导致上层永远接不到失败信号。用哨兵标记明确区分"失败"和"正常回答"。
     if reply == agent_mod.AGENT_FAILURE:
-        logger.warning("agent 返回失败哨兵，走三分支兜底: %s", content[:30])
+        logger.warning("agent 返回失败哨兵，走三分支兜底: %r", content[:30])
         reply = _dispatch_fallback(
             {"openid": openid, "content": content, "now": now_str}
         )
@@ -77,8 +66,7 @@ def _classify_and_route(state: dict) -> str:
     intent = llm.classify_intent(content, now)
 
     if intent == "record":
-        # 方案B：兜底路径不写账——写路径收敛为一条(agent 工具的 insert_many_for_ledger)。
-        # Agent 失败时若用户想记账，直接提示重发。避免兜底再写一条 ledger_id=NULL 的无主账。
+        # 兜底路径不写账：写路径只有一条（agent 工具），失败时提示重发，避免写出无主账。
         return "没记上，请重发一次。（Agent 暂不可用）"
     elif intent == "query":
         params = llm.extract_query_params(content, now)
@@ -96,8 +84,7 @@ def _classify_and_route(state: dict) -> str:
             type_filter=params.type_filter,
             limit=params.limit,
         )
-        # spec 004/FR-012：兜底路径与主路径同口径——合计必须来自 SQL 聚合（无截断），
-        # 不得像从前那样按返回的 rows 心算（rows 受 limit 截断，且会混加收入支出）
+        # 与主路径同口径：合计必须来自 SQL 聚合（无截断），不能按受 limit 截断的 rows 心算
         totals = db.sum_by_ledger(
             ledger_id,
             params.date_from,
