@@ -61,26 +61,32 @@ from ..core.prompts import build_agent_prompt  # spec 005：prompt 独立；006 
 AGENT_FAILURE = "\x00__AGENT_FAILED__\x00"
 
 
-def _pending_joins_hint(openid: str) -> str:
-    """T049（US2/AC4）：owner 有待审批申请时，返回一段附加到 system prompt 的提示。
+def _safe_text(text: str, limit: int = 40) -> str:
+    """状态栏用的文本消毒：去控制字符/尖括号，限长，防状态栏投毒。"""
+    cleaned = "".join(
+        ch for ch in str(text) if ch.isprintable() and ch not in "<>"
+    )
+    return cleaned[:limit]
 
-    这是「推送尽力而为」的**兜底保底**：微信 48h 推送窗口不可靠，
-    所以 owner 任何一次对话都自动检查一次，让 agent 顺带提示。
-    非 owner / 无待审批 → 返回空串（不影响 prompt）。
-    """
+
+def _agent_status(openid: str, now: str) -> str:
+    """末尾状态栏：当前时间 / 当前账本 / 待审批数量（不含申请人昵称）。"""
+    ledger = "（无）"
+    pending = 0
     try:
-        pending = db.list_pending_joins(openid)   # 内部已判定：非 owner 或无账本 → []
-    except Exception as e:                         # 兜底：查询失败绝不能拖垮对话
-        logger.warning("检查待审批失败（已忽略）: %s", e)
-        return ""
-    if not pending:
-        return ""
-    names = "、".join((p.get("nickname") or "（无昵称）") for p in pending)
+        lid = db.get_user_ledger_id(openid)
+        if lid is not None:
+            info = db.get_ledger_info(lid)
+            if info:
+                ledger = f"「{_safe_text(info['name'])}」（#{info['id']}）"
+                if info.get("is_deleted"):
+                    ledger += "（已删除·只读）"
+        pending = len(db.list_pending_joins(openid))
+    except Exception as e:  # 状态查询失败不能拖垮对话
+        logger.warning("状态栏查询失败（已降级）: %s", e)
     return (
-        f"\n\n【系统提示 · 请务必执行】当前账本有 {len(pending)} 条待审批的加入申请"
-        f"（申请人：{names}）。请在本次回复的末尾**顺带提一句**提醒 owner，"
-        f"例如「（顺带一提：有 {len(pending)} 条加入申请待你同意，说『有哪些申请』可查看）」；"
-        f"不要打断用户当前的话题，不要额外调用工具去查。"
+        f"<agent_status>当前时间 {now}；当前账本 {ledger}；"
+        f"待审批 {pending} 条</agent_status>"
     )
 
 
@@ -153,9 +159,8 @@ def run_agent(openid: str, content: str) -> str:
         if fast is not None:
             db.append_chat_history(openid, [user_msg, {"role": "assistant", "content": fast}])
             return fast
-        # T049（US2/AC4 + 审批流程第3步 · 兜底保底）：owner 每次对话时自动检查待审批，
-        # 附在 system prompt 里让 agent 顺带提示——不依赖 owner 主动查询（推送 48h 限制的保底）。
-        prompt = build_agent_prompt(now) + _pending_joins_hint(openid)
+        # T049（US2/AC4）：owner 每次对话时自动检查待审批，作为推送不可靠时的兜底。
+        prompt = build_agent_prompt()
         # 每次按用户身份编译一个新的 agent（毫秒级，可接受）
         agent = create_react_agent(
             model=_get_model(),
@@ -165,7 +170,8 @@ def run_agent(openid: str, content: str) -> str:
         # 任务4：对话记忆——取该用户历史，拼上新消息一起给 agent，
         # 澄清反问后用户补答能接上（不然 agent 不知道之前问过什么）。
         history = db.get_chat_history(openid)   # list[{role, content}, ...]
-        messages = history + [user_msg]
+        status_msg = {"role": "user", "content": _agent_status(openid, now)}
+        messages = history + [status_msg, user_msg]
         result = agent.invoke({"messages": messages}, config={"recursion_limit": 12})
 
         # 从 agent 结果里取最后一条 assistant 回复

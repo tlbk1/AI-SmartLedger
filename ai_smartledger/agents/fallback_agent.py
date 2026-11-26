@@ -25,6 +25,14 @@ from ..core.prompts import GREETING_TEXT, HELP_TEXT, SYSTEM_PROMPT
 
 # QueryParams / TOOL_SCHEMA 定义在本文件：兜底查询的参数抽取是 llm 的职责
 
+
+def _with_now(content: str, now_str: str) -> str:
+    """把时间追加到 user 消息末尾，保持 system 前缀稳定。"""
+    return (
+        f"{content}\n\n"
+        f"<agent_status>当前时间（Asia/Shanghai）：{now_str}</agent_status>"
+    )
+
 @dataclass
 class QueryParams:
     """LLM 产出的结构化查询参数——工具 schema 只收这些。"""
@@ -171,9 +179,9 @@ def classify_intent(content: str, now_str: str) -> Literal["record", "query", "c
         resp = client.chat.completions.create(
             model=_model(),
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(now=now_str)},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "system", "content": few_shot},
-                {"role": "user", "content": content},
+                {"role": "user", "content": _with_now(content, now_str)},
             ],
             tools=tools,
             # 注意：deepseek-v4-flash/pro 是 thinking mode，
@@ -243,9 +251,9 @@ def _extract_once(content: str, now_str: str) -> ExtractionResult:
         resp = client.chat.completions.create(
             model=_model(),
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(now=now_str)},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "system", "content": extract_prompt},
-                {"role": "user", "content": content},
+                {"role": "user", "content": _with_now(content, now_str)},
             ],
             temperature=0,
             response_format={"type": "json_object"},
@@ -305,9 +313,9 @@ def extract_query_params(content: str, now_str: str) -> Optional[QueryParams]:
         resp = client.chat.completions.create(
             model=_model(),
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(now=now_str)},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "system", "content": guidance},
-                {"role": "user", "content": content},
+                {"role": "user", "content": _with_now(content, now_str)},
             ],
             tools=[TOOL_SCHEMA],
             # 同 classify：thinking mode 不支持 tool_choice 强制
@@ -388,8 +396,8 @@ def summarize_query_result(
         resp = client.chat.completions.create(
             model=_model(),
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(now=now_str)},
-                {"role": "user", "content": summary_prompt},
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": _with_now(summary_prompt, now_str)},
             ],
             temperature=0.3,  # 总结允许略微灵活
         )
@@ -429,9 +437,9 @@ def chat_reply(content: str, now_str: str) -> str:
         resp = client.chat.completions.create(
             model=_model(),
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT.format(now=now_str)},
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "system", "content": chat_prompt},
-                {"role": "user", "content": content},
+                {"role": "user", "content": _with_now(content, now_str)},
             ],
             temperature=0.5,
         )

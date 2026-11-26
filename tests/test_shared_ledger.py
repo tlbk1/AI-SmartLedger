@@ -387,32 +387,38 @@ def test_removed_member_current_ledger_falls_back(iso):
     assert db.get_user_ledger_id(b) is not None
 
 
-# ════════ T049: owner 对话时自动提示待审批（兜底保底）════════
+# ════════ T049: 状态栏带待审批数量（兜底保底）════════
 
-def test_pending_hint_empty_for_non_owner(iso):
-    """T049（US2/AC4）：非 owner 不产生提示（不能向申请人泄露申请动态）。"""
+_NOW = "2026-11-26T00:00:00+08:00"
+
+
+def test_agent_status_no_pending_leak_for_non_owner(iso):
+    """T049（US2/AC4）：非 owner 的待审批计数为 0，不泄露申请动态。"""
     _setup_owner_with_ledger()
     db.apply_join("o_applicant", db.get_my_ledgers("o_owner") and _code_of("我们家"))
     import ai_smartledger.agents.react_agent as agent
-    assert agent._pending_joins_hint("o_applicant") == ""
-    assert agent._pending_joins_hint("o_unknown_never_joined") == ""
+    status = agent._agent_status("o_applicant", _NOW)
+    assert "待审批 1 条" not in status
+    assert agent._agent_status("o_unknown_never_joined", _NOW).count("待审批 0 条") == 1
 
 
-def test_pending_hint_for_owner_with_pending(iso):
-    """T049（US2/AC4）：owner 有待审批 → 提示含条数与申请人昵称。"""
+def test_agent_status_owner_pending_count_without_names(iso):
+    """T049：owner 有待审批 → 状态栏含条数与当前账本，但不含申请人昵称。"""
     owner, code, lid = _setup_owner_with_ledger()
     db.set_nickname("o_applicant", "小王")
     db.apply_join("o_applicant", code)
     import ai_smartledger.agents.react_agent as agent
-    hint = agent._pending_joins_hint(owner)
-    assert "待审批" in hint and "1" in hint and "小王" in hint
+    status = agent._agent_status(owner, _NOW)
+    assert "待审批 1 条" in status
+    assert "我们家" in status
+    assert "小王" not in status
 
 
-def test_pending_hint_empty_when_no_pending(iso):
-    """T049：owner 无待审批 → 不注入提示（不给 LLM 噪音）。"""
+def test_agent_status_zero_pending_for_owner(iso):
+    """T049：owner 无待审批 → 状态栏显示 0 条。"""
     owner, code, lid = _setup_owner_with_ledger()
     import ai_smartledger.agents.react_agent as agent
-    assert agent._pending_joins_hint(owner) == ""
+    assert "待审批 0 条" in agent._agent_status(owner, _NOW)
 
 
 # ════════ T050: 已删除账本（历史只读 + 明确提示）════════

@@ -18,6 +18,9 @@
 互不污染。`eval-reader` 这个 openid 首次使用时自动播种三条流水（午餐 30 / 电影 50 /
 工资 5000），供查询类断言比对。
 
+> 重复运行前先删除 `evals/.eval_ledger.db`：`eval-creator` 等用例需要全新账本，否则会复用
+> 上次运行留下的账本，出现与代码无关的失败。
+
 ## 运行
 
 前置：Node ≥ 18（`npx promptfoo`）；LLM 调用（被测 agent + 评分）走 `.env` 里的

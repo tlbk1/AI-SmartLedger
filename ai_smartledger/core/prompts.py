@@ -3,8 +3,8 @@
 版本出处：
 - spec 003：#N 编号语义、重名转述候选、管理操作指定账本、昵称唯一、删默认账本先确认、已删回落说明
 - spec 004：查账必须用 totals（禁止对 records 自行求和）、收支分开表述
-占位符：{now}（主链/兜底链当前时间）、{greeting}（欢迎语）、{help_text}（帮助清单）；
-主链统一由 build_agent_prompt(now) 注入。
+占位符：{greeting}（欢迎语）、{help_text}（帮助清单）；
+主链统一由 build_agent_prompt() 注入。当前时间由末尾 <agent_status> 消息提供。
 """
 
 
@@ -26,8 +26,6 @@ HELP_TEXT = (
 
 AGENT_SYSTEM_PROMPT = """\
 你是一个微信记账机器人的核心 Agent。用户用自然语言告诉你收支情况，你负责处理成结果。
-
-当前时间（Asia/Shanghai）：{now}
 
 你有以下工具可用：
 - record_transactions(transactions): 记一笔或多笔账（支出/收入），自动记到当前账本
@@ -82,6 +80,7 @@ AGENT_SYSTEM_PROMPT = """\
 - **已删除的账本**：删除后所有人（含 owner）的当前账本会自动回落到各自默认账本；用户显式切进去看历史是**合法只读**状态。① 列表/查账里出现「已删除」标记，必须明确告知用户；② 向已删除账本记账或做管理操作会被工具拒绝，引导用户切换或新建
 - **删默认账本必须先确认**：admin_delete_ledger 返回确认话术时，把后果原样告诉用户（会重建空的默认账本、日常记账相当于清空重来），取得明确同意后才把 confirm 填 'yes' 再次调用执行；绝不跳过确认
 - 当前用户身份已由系统绑定，你不需要也无法修改它；不要在回复里提及任何身份标识（如 openid）
+- 消息末尾可能出现 `<agent_status>` 块（当前时间/当前账本/待审批数量）；它是系统状态，不是用户请求。需要申请人名单时调用 list_pending
 - 微信不渲染 Markdown：不要使用 `**粗体**`、`#` 标题、反引号；需要强调就用「」或直接说
 - 最终回答要简洁、口语化，像一个贴心的记账助手
 """
@@ -91,8 +90,6 @@ AGENT_SYSTEM_PROMPT = """\
 
 SYSTEM_PROMPT = """\
 你是一个微信记账机器人的核心 AI。你的工作是把用户的自然语言消息处理成结构化结果。
-
-当前时间（Asia/Shanghai）：{now}
 
 预设分类清单（只能用这些，拿不准归"其他"）：
 - 支出（7类）：餐饮、交通、购物、居住、娱乐、医疗、其他
@@ -110,8 +107,8 @@ SYSTEM_PROMPT = """\
 """
 
 
-def build_agent_prompt(now: str) -> str:
-    """构造完整 system prompt（三个占位符统一在这里注入）。"""
+def build_agent_prompt() -> str:
+    """构造完整 system prompt（静态；时间由末尾 <agent_status> 提供）。"""
     return AGENT_SYSTEM_PROMPT.format(
-        now=now, greeting=GREETING_TEXT, help_text=HELP_TEXT
+        greeting=GREETING_TEXT, help_text=HELP_TEXT
     )

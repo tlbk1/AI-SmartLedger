@@ -137,19 +137,20 @@ check("V13 B 回落默认账本", db.get_user_ledger_id("o_B") == b_default_real
 rows = db.query_by_ledger(lid, "2026-09-01", "2026-09-30")
 check("V13 已删账本历史仍可查", len(rows) >= 2)
 
-# ── V14 T049: owner 对话时自动带待审批提示（兜底保底）──
+# ── V14 T049: owner 对话时状态栏带待审批数量（兜底保底）──
 # 用全新的活账本测（不依赖 V13 删掉的账本）
 import ai_smartledger.agents.react_agent as agent
+_NOW = "2026-11-26T00:00:00+08:00"
 db.get_or_create_user("o_F")
 db.set_nickname("o_F", "老F")
 ok, code_f = db.create_ledger("o_F", "F的账本")
-check("V14 前置: F 无待审批", agent._pending_joins_hint("o_F") == "")
+check("V14 前置: F 无待审批", "待审批 0 条" in agent._agent_status("o_F", _NOW))
 db.set_nickname("o_E", "小E")
 db.apply_join("o_E", code_f)
-_hint = agent._pending_joins_hint("o_F")
-check("V14 owner 有待审批→提示含昵称", "待审批" in _hint and "小E" in _hint, f"({_hint[:60]}...)")
-# 非 owner 不提示。必须让"空提示"有个会产生提示的真实原因——用普通成员「小G」测：
-# owner 在这本账上确实有待审批申请，小G 只是成员，所以提示空是因为权限判定生效，
+_status = agent._agent_status("o_F", _NOW)
+check("V14 owner 有待审批→状态栏含条数且不带昵称", "待审批 1 条" in _status and "小E" not in _status, f"({_status[:60]}...)")
+# 非 owner 不泄露。必须让"0 条"有个会产生 1 条的真实原因——用普通成员「小G」测：
+# owner 在这本账上确实有待审批申请，小G 只是成员，所以计数为 0 是因为权限判定生效，
 # 不是因为这本账本来就没有待审批。否则守卫被删掉这行断言照样通过（假绿）。
 db.get_or_create_user("o_G")
 db.set_nickname("o_G", "小G")
@@ -158,13 +159,14 @@ ok, _ = db.approve_join("o_F", "小G")
 _fid, _ferr = db.resolve_ledger_selector("o_F", "F的账本")
 check("V14 前置: 小G 已是 F 账本的普通成员", ok and _ferr is None and db.is_ledger_admin("o_G", _fid) is False)
 check("V14 前置: F 仍有待审批申请（小E）", db.list_pending_joins("o_F") != [])
-# 关键前置：把小G 的【当前账本】切到 F 的账本——_pending_joins_hint 查的是当前账本，
+# 关键前置：把小G 的【当前账本】切到 F 的账本——_agent_status 查的是当前账本，
 # 而加入别人的账本不会自动切换；不切的话它查的是小G 自己的「我的账本」（本来就没有待审批），
 # 权限判定被删掉这行断言照样通过（假绿）。
 _ok_sw, _sw_msg = db.switch_ledger("o_G", f"#{_fid}")
 check("V14 前置: 小G 当前账本=F 账本（且仍有待审批）",
       _ok_sw and db.get_user_ledger_id("o_G") == _fid, f"({_sw_msg})")
-check("V14 非 owner 不提示（不泄露）", agent._pending_joins_hint("o_G") == "")
+_g_status = agent._agent_status("o_G", _NOW)
+check("V14 非 owner 不泄露待审批", "待审批 1 条" not in _g_status and "小E" not in _g_status)
 
 # ── V15 T050: 已删账本可切进去看历史，且带"已删除"提示 ──
 _mine = {l["name"]: l for l in db.get_my_ledgers("o_B")}

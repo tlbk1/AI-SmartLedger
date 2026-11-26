@@ -58,7 +58,8 @@ _pending_cache: _TTLCache = _TTLCache()
 _chat_history_cache: _TTLCache = _TTLCache()
 
 
-_CHAT_HISTORY_MAX = 20
+_CHAT_HISTORY_MAX = 60
+_CHAT_HISTORY_KEEP = 30
 
 
 _CHAT_HISTORY_TTL = 1800
@@ -69,12 +70,19 @@ def get_chat_history(openid: str) -> list:
     return _chat_history_cache.get(openid) or []
 
 
-def append_chat_history(openid: str, messages: list, maxlen: int = _CHAT_HISTORY_MAX):
-    """把新消息追加到该用户历史，并裁剪到最近 maxlen 条。"""
+def append_chat_history(
+    openid: str,
+    messages: list,
+    maxlen: int = _CHAT_HISTORY_MAX,
+    keep: int = _CHAT_HISTORY_KEEP,
+):
+    """追加消息；超过 maxlen 时成批保留最近 keep 条（从 user 开始）。"""
     hist = get_chat_history(openid)
     hist.extend(messages)
     if len(hist) > maxlen:
-        hist = hist[-maxlen:]
+        hist = hist[-keep:]
+        while hist and hist[0].get("role") != "user":
+            hist = hist[1:]
     _chat_history_cache.set(openid, hist, ttl_seconds=_CHAT_HISTORY_TTL)
 
 
