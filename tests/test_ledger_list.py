@@ -11,6 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import ai_smartledger.db as db
+from ai_smartledger.agents import fast_paths
 from ai_smartledger.agents import react_agent as agent
 from ai_smartledger.agents.react_agent import _extract_reply
 from ai_smartledger.tools.builtin.ledgers import format_ledger_list
@@ -140,7 +141,7 @@ def test_fast_path_pending_hint(iso):
 
 
 def test_compound_message_not_fast_path():
-    assert agent._ledger_fast_reply("o_x", "我的账本和成员") is None
+    assert fast_paths.ledger_fast_reply("o_x", "我的账本和成员") is None
 
 
 def test_extract_reply_skips_tool_messages():

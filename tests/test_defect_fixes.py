@@ -12,6 +12,7 @@ import langgraph.prebuilt as lp
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from ai_smartledger import db
+from ai_smartledger.agents import fallback_agent
 from ai_smartledger.agents import react_agent as agent
 
 
@@ -118,6 +119,9 @@ class _FakeAgent:
 def _patch_agent(monkeypatch, messages):
     monkeypatch.setattr(agent, "_get_model", lambda: object())
     monkeypatch.setattr(lp, "create_react_agent", lambda **kwargs: _FakeAgent(messages))
+    monkeypatch.setattr(
+        fallback_agent, "dispatch_message", lambda content, status: {"intent": "agent"}
+    )
 
 
 def test_run_agent_returns_failure_when_last_is_tool(iso, monkeypatch):

@@ -12,6 +12,7 @@ import langgraph.prebuilt as lp
 from langchain_core.messages import AIMessage
 
 from ai_smartledger import db
+from ai_smartledger.agents import fallback_agent
 from ai_smartledger.agents import react_agent as agent
 from ai_smartledger.core.prompts import SYSTEM_PROMPT, build_agent_prompt
 
@@ -140,6 +141,9 @@ def test_run_agent_messages_end_with_status_then_user(iso, monkeypatch):
 
     monkeypatch.setattr(agent, "_get_model", lambda: object())
     monkeypatch.setattr(lp, "create_react_agent", lambda **kwargs: FakeAgent())
+    monkeypatch.setattr(
+        fallback_agent, "dispatch_message", lambda content, status: {"intent": "agent"}
+    )
 
     assert agent.run_agent("o_status", "测试") == "ok"
     messages = captured["messages"]

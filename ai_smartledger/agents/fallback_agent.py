@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from ..core.llm import gateway
-from ..core.prompts import GREETING_TEXT, HELP_TEXT, SYSTEM_PROMPT
+from ..core.prompts import DISPATCH_PROMPT, GREETING_TEXT, HELP_TEXT, SYSTEM_PROMPT
 
 # QueryParams / TOOL_SCHEMA 定义在本文件：兜底查询的参数抽取是 llm 的职责
 
@@ -107,6 +107,26 @@ def _get_client() -> OpenAI:
 
 def _model() -> str:
     return gateway().model
+
+
+def dispatch_message(content: str, status: str) -> dict:
+    """一次结构化调度：intent + 参数 + 回复；失败返回 {} 交给 Agent。"""
+    client = _get_client()
+    try:
+        resp = client.chat.completions.create(
+            model=_model(),
+            messages=[
+                {"role": "system", "content": DISPATCH_PROMPT},
+                {"role": "user", "content": f"{content}\n\n{status}"},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("调度失败，回退 Agent: %s", e)
+        return {}
 
 
 # ──────────────────────────── Prompt 常量 ────────────────────────────
